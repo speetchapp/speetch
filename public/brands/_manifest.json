@@ -1,0 +1,198 @@
+[
+  {
+    "name": "Apec",
+    "slug": "apec"
+  },
+  {
+    "name": "Peugeot",
+    "slug": "peugeot"
+  },
+  {
+    "name": "Badoit",
+    "slug": "badoit"
+  },
+  {
+    "name": "Laboratoires Vichy",
+    "slug": "laboratoires-vichy"
+  },
+  {
+    "name": "Danone",
+    "slug": "danone"
+  },
+  {
+    "name": "SFR",
+    "slug": "sfr"
+  },
+  {
+    "name": "Carrefour",
+    "slug": "carrefour"
+  },
+  {
+    "name": "Nestlé",
+    "slug": "nestle"
+  },
+  {
+    "name": "Orange",
+    "slug": "orange"
+  },
+  {
+    "name": "Total Énergies",
+    "slug": "total-energies"
+  },
+  {
+    "name": "Gaumont",
+    "slug": "gaumont"
+  },
+  {
+    "name": "Coca-cola",
+    "slug": "coca-cola"
+  },
+  {
+    "name": "Dolce Gusto",
+    "slug": "dolce-gusto"
+  },
+  {
+    "name": "M6",
+    "slug": "m6"
+  },
+  {
+    "name": "Île-de-France Mobilités",
+    "slug": "ile-de-france-mobilites"
+  },
+  {
+    "name": "SNCF",
+    "slug": "sncf"
+  },
+  {
+    "name": "Super U",
+    "slug": "super-u"
+  },
+  {
+    "name": "Michelin",
+    "slug": "michelin"
+  },
+  {
+    "name": "Hewlett-Packard",
+    "slug": "hewlett-packard"
+  },
+  {
+    "name": "Canal Plus",
+    "slug": "canal-plus"
+  },
+  {
+    "name": "Auchan",
+    "slug": "auchan"
+  },
+  {
+    "name": "Ballantine's",
+    "slug": "ballantine-s"
+  },
+  {
+    "name": "TF1",
+    "slug": "tf1"
+  },
+  {
+    "name": "Le Monde",
+    "slug": "le-monde"
+  },
+  {
+    "name": "Kenzo",
+    "slug": "kenzo"
+  },
+  {
+    "name": "Pfizer",
+    "slug": "pfizer"
+  },
+  {
+    "name": "Lenovo",
+    "slug": "lenovo"
+  },
+  {
+    "name": "Gourmet",
+    "slug": "gourmet"
+  },
+  {
+    "name": "Pierre et Vacances",
+    "slug": "pierre-et-vacances"
+  },
+  {
+    "name": "Pampers",
+    "slug": "pampers"
+  },
+  {
+    "name": "Universal",
+    "slug": "universal"
+  },
+  {
+    "name": "Supermarchés Casino",
+    "slug": "supermarches-casino"
+  },
+  {
+    "name": "Disney",
+    "slug": "disney"
+  },
+  {
+    "name": "Fiskars",
+    "slug": "fiskars"
+  },
+  {
+    "name": "Purina",
+    "slug": "purina"
+  },
+  {
+    "name": "Felix",
+    "slug": "felix"
+  },
+  {
+    "name": "Franprix",
+    "slug": "franprix"
+  },
+  {
+    "name": "Jardiland",
+    "slug": "jardiland"
+  },
+  {
+    "name": "Caisse des Dépôts",
+    "slug": "caisse-des-depots"
+  },
+  {
+    "name": "Société Générale",
+    "slug": "societe-generale"
+  },
+  {
+    "name": "Haier",
+    "slug": "haier"
+  },
+  {
+    "name": "Inneov",
+    "slug": "inneov"
+  },
+  {
+    "name": "Giraudy",
+    "slug": "giraudy"
+  },
+  {
+    "name": "Sunny Delight",
+    "slug": "sunny-delight"
+  },
+  {
+    "name": "Tessi",
+    "slug": "tessi"
+  },
+  {
+    "name": "Senseo",
+    "slug": "senseo"
+  },
+  {
+    "name": "Sodexho",
+    "slug": "sodexho"
+  },
+  {
+    "name": "Bouygues Telecom",
+    "slug": "bouygues-telecom"
+  },
+  {
+    "name": "Havas",
+    "slug": "havas"
+  }
+]

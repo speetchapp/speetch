@@ -1,44 +1,85 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { Metadata } from "next";
-import { SlugForm } from "./slug-form";
+import { Eyebrow } from "@/lib/ds";
 
 export const metadata: Metadata = {
-  title: "Accéder à mon espace · Speetch",
+  title: "Clients · Speetch",
   description:
-    "Saisis le nom de ton espace client Speetch pour y accéder.",
-  robots: { index: false, follow: false },
+    "Une sélection de marques accompagnées. Quinze ans de directions artistiques pour la presse, le luxe, la grande distribution et le service public.",
 };
 
-export default function ClientsAccessPage() {
-  return (
-    <div className="relative min-h-svh w-full px-6 py-10 md:px-16 md:py-14">
-      <section className="mx-auto flex max-w-2xl flex-col items-start gap-12 pt-20 md:pt-28">
-        <p className="text-[11px] uppercase tracking-[0.4em] text-white/40">
-          Accès
-        </p>
+type Brand = { name: string; slug: string };
 
+async function loadBrands(): Promise<Array<Brand & { svg: string }>> {
+  const dir = path.join(process.cwd(), "public", "brands");
+  const manifest: Brand[] = JSON.parse(
+    await fs.readFile(path.join(dir, "_manifest.json"), "utf-8"),
+  );
+  return Promise.all(
+    manifest.map(async (b) => ({
+      ...b,
+      svg: await fs.readFile(path.join(dir, `${b.slug}.svg`), "utf-8"),
+    })),
+  );
+}
+
+export default async function ClientsPage() {
+  const brands = await loadBrands();
+
+  return (
+    <div className="relative flex min-h-svh w-full flex-col px-6 py-8 md:px-16 md:py-12">
+      {/* En-tête : numéro de section + signature */}
+      <header className="flex items-baseline justify-between border-t border-white/10 pt-6 md:pt-8">
+        <Eyebrow tracking="lg" intensity="muted">
+          01 · Clients
+        </Eyebrow>
+        <Eyebrow tracking="md" intensity="muted">
+          Speetch
+        </Eyebrow>
+      </header>
+
+      {/* Hero monumental */}
+      <section className="flex flex-col gap-10 py-16 md:gap-16 md:py-28">
         <h1
-          className="font-sans font-extralight leading-[0.85] tracking-[-0.05em] text-[#F5F5F7]"
-          style={{ fontSize: "clamp(2.5rem, 7vw, 5rem)" }}
+          className="font-sans font-extralight leading-[0.85] tracking-[-0.06em] text-[#F5F5F7]"
+          style={{ fontSize: "clamp(3.5rem, 14vw, 12rem)" }}
         >
-          Ton{" "}
-          <span className="font-serif italic font-normal text-white/85">
-            espace
+          <span className="block">Une sélection</span>
+          <span className="block pl-[0.3em] text-white/85">de marques</span>
+          <span className="block pl-[0.7em] font-serif italic font-normal text-white/65">
+            — {brands.length}.
           </span>
-          ,{" "}
-          <span className="block md:inline">à toi seul.</span>
         </h1>
 
-        <p className="max-w-xl text-balance font-serif text-base italic text-white/55 md:text-lg">
-          Indique le nom de ton espace pour l&apos;ouvrir. Il t&apos;a été
-          transmis par e-mail à la création.
+        <p className="max-w-2xl text-balance font-serif text-base italic text-white/55 md:text-lg">
+          Quinze ans de directions artistiques aux côtés de la presse, du
+          luxe, de la grande distribution, du service public et des médias.
         </p>
-
-        <SlugForm />
       </section>
 
-      <footer className="absolute inset-x-0 bottom-0 flex items-end justify-between px-6 py-6 text-[11px] uppercase tracking-[0.28em] text-white/40 md:px-12">
-        <span>Paris · 2026</span>
-        <span>Speetch — Espaces clients</span>
+      {/* Grille logos */}
+      <section className="border-t border-white/10 py-8 md:py-12">
+        <ul className="grid grid-cols-2 gap-px overflow-hidden bg-white/[0.06] sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+          {brands.map((b) => (
+            <li
+              key={b.slug}
+              title={b.name}
+              className="group relative flex aspect-[3/2] items-center justify-center bg-black p-6 text-white/45 transition-colors duration-700 hover:text-white md:p-8 [&>svg]:h-auto [&>svg]:w-auto [&>svg]:max-h-[55%] [&>svg]:max-w-[70%]"
+              dangerouslySetInnerHTML={{ __html: b.svg }}
+            />
+          ))}
+        </ul>
+      </section>
+
+      {/* Footer */}
+      <footer className="mt-12 flex items-end justify-between border-t border-white/10 pt-6 md:mt-20">
+        <Eyebrow tracking="sm" intensity="muted">
+          Paris · 2026
+        </Eyebrow>
+        <Eyebrow tracking="sm" intensity="muted">
+          Speetch — Studio
+        </Eyebrow>
       </footer>
     </div>
   );
