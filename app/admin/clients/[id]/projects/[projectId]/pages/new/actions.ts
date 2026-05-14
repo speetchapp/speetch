@@ -1,0 +1,274 @@
+"use server";
+
+import { randomUUID } from "node:crypto";
+import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { ensureUniqueSlug, slugify } from "@/lib/slug";
+import { instantiateTemplate, isValidTemplateId } from "@/lib/page-templates";
+import { loadTemplate } from "@/lib/page-templates-db";
+import type { PageContent } from "@/types/database";
+
+export type CreatePageState = {
+  status: "idle" | "success" | "error";
+  error?: string;
+};
+
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const MAX_HTML_SIZE = 2 * 1024 * 1024; // 2 MB
+
+export async function createPage(
+  _prev: CreatePageState,
+  formData: FormData,
+): Promise<CreatePageState> {
+  // Auth
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { status: "error", error: "Session expirée. Reconnecte-toi." };
+  }
+
+  const ownerEmail = process.env.SPEETCH_OWNER_EMAIL?.toLowerCase();
+  if (ownerEmail && user.email?.toLowerCase() !== ownerEmail) {
+    return { status: "error", error: "Accès réservé au propriétaire." };
+  }
+
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return {
+      status: "error",
+      error:
+        "SUPABASE_SERVICE_ROLE_KEY manquant dans .env.local — impossible d'écrire dans Supabase.",
+    };
+  }
+
+  // Validation
+  const profileId = String(formData.get("profile_id") ?? "").trim();
+  const projectId = String(formData.get("project_id") ?? "").trim();
+  const templateIdRaw = String(formData.get("template_id") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim();
+  const isPublished = formData.get("is_published") === "on";
+
+  if (!UUID_REGEX.test(profileId)) {
+    return { status: "error", error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(projectId)) {
+    return { status: "error", error: "Projet invalide." };
+  }
+  if (name.length < 2) {
+    return {
+      status: "error",
+      error: "Le titre de la page doit faire au moins 2 caractères.",
+    };
+  }
+  if (!isValidTemplateId(templateIdRaw)) {
+    return { status: "error", error: "Template inconnu." };
+  }
+
+  const admin = createAdminClient();
+
+  const template = await loadTemplate(admin, templateIdRaw);
+  if (!template) {
+    return { status: "error", error: "Template introuvable." };
+  }
+
+  // Vérifie que le projet appartient bien au client
+  const { data: project, error: projectError } = await admin
+    .from("projects")
+    .select("id, profile_id")
+    .eq("id", projectId)
+    .eq("profile_id", profileId)
+    .maybeSingle();
+
+  if (projectError || !project) {
+    return { status: "error", error: "Projet introuvable." };
+  }
+
+  // Slug unique au sein du projet
+  const baseSlug = slugify(name) || "page";
+  const slug = await ensureUniqueSlug(baseSlug, async (candidate) => {
+    const { data } = await admin
+      .from("pages")
+      .select("id")
+      .eq("project_id", projectId)
+      .eq("slug", candidate)
+      .maybeSingle();
+    return !!data;
+  });
+
+  // Position : prochaine à la fin
+  const { data: existing } = await admin
+    .from("pages")
+    .select("position")
+    .eq("project_id", projectId)
+    .order("position", { ascending: false })
+    .limit(1);
+
+  const nextPosition =
+    existing && existing.length > 0 ? existing[0].position + 1 : 0;
+
+  // Instancie le template (uuids frais pour chaque section)
+  const content = instantiateTemplate(template, () => randomUUID());
+
+  const { error: insertError } = await admin.from("pages").insert({
+    project_id: projectId,
+    name,
+    slug,
+    template_id: template.id,
+    content,
+    position: nextPosition,
+    is_published: isPublished,
+  });
+
+  if (insertError) {
+    console.error("[createPage] insert error:", insertError);
+    return {
+      status: "error",
+      error: insertError.message || "Erreur d'insertion en base.",
+    };
+  }
+
+  revalidatePath(`/admin/clients/${profileId}/projects/${projectId}`);
+  revalidatePath(`/admin/clients`);
+  redirect(`/admin/clients/${profileId}/projects/${projectId}`);
+}
+
+/**
+ * Crée une page en mode "Reproduction fidèle" depuis un upload HTML direct.
+ * Pas de passage par un template BDD : le HTML est stocké inline dans
+ * pages.content.meta.raw_html, comme pour les pages issues d'un template
+ * raw_html. `template_id` est fixé à la sentinelle "_raw_html" pour signaler
+ * l'origine sans pointer vers une ligne `page_templates`.
+ */
+export async function createRawHtmlPage(
+  _prev: CreatePageState,
+  formData: FormData,
+): Promise<CreatePageState> {
+  // Auth
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { status: "error", error: "Session expirée. Reconnecte-toi." };
+  }
+
+  const ownerEmail = process.env.SPEETCH_OWNER_EMAIL?.toLowerCase();
+  if (ownerEmail && user.email?.toLowerCase() !== ownerEmail) {
+    return { status: "error", error: "Accès réservé au propriétaire." };
+  }
+
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return {
+      status: "error",
+      error:
+        "SUPABASE_SERVICE_ROLE_KEY manquant dans .env.local — impossible d'écrire dans Supabase.",
+    };
+  }
+
+  // Validation
+  const profileId = String(formData.get("profile_id") ?? "").trim();
+  const projectId = String(formData.get("project_id") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim();
+  const isPublished = formData.get("is_published") === "on";
+  const file = formData.get("file");
+
+  if (!UUID_REGEX.test(profileId)) {
+    return { status: "error", error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(projectId)) {
+    return { status: "error", error: "Projet invalide." };
+  }
+  if (name.length < 2) {
+    return {
+      status: "error",
+      error: "Le titre de la page doit faire au moins 2 caractères.",
+    };
+  }
+  if (!(file instanceof File) || file.size === 0) {
+    return { status: "error", error: "Aucun fichier HTML reçu." };
+  }
+  if (file.size > MAX_HTML_SIZE) {
+    return {
+      status: "error",
+      error: "Fichier HTML trop volumineux (max 2 MB).",
+    };
+  }
+
+  const html = await file.text();
+  if (html.trim().length < 20) {
+    return { status: "error", error: "HTML trop court pour être exploitable." };
+  }
+
+  const admin = createAdminClient();
+
+  // Vérifie l'appartenance projet → client
+  const { data: project, error: projectError } = await admin
+    .from("projects")
+    .select("id, profile_id")
+    .eq("id", projectId)
+    .eq("profile_id", profileId)
+    .maybeSingle();
+
+  if (projectError || !project) {
+    return { status: "error", error: "Projet introuvable." };
+  }
+
+  // Slug unique au sein du projet
+  const baseSlug = slugify(name) || "page";
+  const slug = await ensureUniqueSlug(baseSlug, async (candidate) => {
+    const { data } = await admin
+      .from("pages")
+      .select("id")
+      .eq("project_id", projectId)
+      .eq("slug", candidate)
+      .maybeSingle();
+    return !!data;
+  });
+
+  const { data: existing } = await admin
+    .from("pages")
+    .select("position")
+    .eq("project_id", projectId)
+    .order("position", { ascending: false })
+    .limit(1);
+
+  const nextPosition =
+    existing && existing.length > 0 ? existing[0].position + 1 : 0;
+
+  const content: PageContent = {
+    intro: "",
+    sections: [],
+    meta: {
+      style: "raw_html",
+      raw_html: html,
+    },
+  };
+
+  const { error: insertError } = await admin.from("pages").insert({
+    project_id: projectId,
+    name,
+    slug,
+    template_id: "_raw_html",
+    content,
+    position: nextPosition,
+    is_published: isPublished,
+  });
+
+  if (insertError) {
+    console.error("[createRawHtmlPage] insert error:", insertError);
+    return {
+      status: "error",
+      error: insertError.message || "Erreur d'insertion en base.",
+    };
+  }
+
+  revalidatePath(`/admin/clients/${profileId}/projects/${projectId}`);
+  revalidatePath(`/admin/clients`);
+  redirect(`/admin/clients/${profileId}/projects/${projectId}`);
+}

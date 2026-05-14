@@ -1,0 +1,225 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { deleteDesignFile } from "./actions";
+import { UploadZone } from "./upload-zone";
+
+const DESIGN_BUCKET = "client-design-systems";
+
+export const metadata: Metadata = {
+  title: "Design system",
+  robots: { index: false, follow: false },
+};
+
+export const dynamic = "force-dynamic";
+
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function formatSize(bytes: number | null | undefined): string {
+  if (!bytes && bytes !== 0) return "—";
+  if (bytes < 1024) return `${bytes} o`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} ko`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} Mo`;
+}
+
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("fr-FR", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+// Retire le préfixe timestamp ajouté à l'upload (xxxxxxxxxxxxx-)
+function displayName(name: string): string {
+  return name.replace(/^\d{10,14}-/, "");
+}
+
+export default async function DesignPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  if (!UUID_REGEX.test(id)) notFound();
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect(`/login?redirect=/admin/clients/${id}/design`);
+  }
+
+  const ownerEmail = process.env.SPEETCH_OWNER_EMAIL?.toLowerCase();
+  if (ownerEmail && user.email?.toLowerCase() !== ownerEmail) {
+    redirect("/admin");
+  }
+
+  const admin = createAdminClient();
+  const { data: client } = await admin
+    .from("profiles")
+    .select("id, full_name, slug")
+    .eq("id", id)
+    .eq("is_owner", false)
+    .maybeSingle();
+
+  if (!client) notFound();
+
+  // Liste les fichiers du bucket dans le dossier <client-id>/
+  const { data: storageFiles, error: storageError } = await admin.storage
+    .from(DESIGN_BUCKET)
+    .list(id, {
+      sortBy: { column: "created_at", order: "desc" },
+    });
+
+  // Génère des signed URLs (1h) pour chaque fichier
+  const files = await Promise.all(
+    (storageFiles ?? [])
+      .filter((f) => f.name && !f.name.startsWith(".")) // ignore placeholders
+      .map(async (f) => {
+        const path = `${id}/${f.name}`;
+        const { data: signed } = await admin.storage
+          .from(DESIGN_BUCKET)
+          .createSignedUrl(path, 60 * 60);
+        return {
+          name: f.name,
+          path,
+          size: f.metadata?.size as number | undefined,
+          mimetype: (f.metadata?.mimetype as string | undefined) ?? null,
+          created_at: f.created_at,
+          url: signed?.signedUrl ?? null,
+        };
+      }),
+  );
+
+  const clientName = client.full_name ?? "Sans nom";
+
+  return (
+    <div className="relative min-h-svh w-full px-6 py-10 md:px-16 md:py-14">
+      {/* Header — mobile only */}
+      <header className="flex items-center justify-between md:hidden">
+        <Link
+          href="/admin/clients"
+          className="group inline-flex items-center gap-3 text-[11px] uppercase tracking-[0.28em] text-white/55 transition-colors duration-300 hover:text-white"
+        >
+          <span className="inline-block h-px w-6 bg-current transition-all duration-500 ease-out group-hover:w-10" />
+          Retour clients
+        </Link>
+        <span className="text-[11px] uppercase tracking-[0.28em] text-white/40">
+          Design system
+        </span>
+      </header>
+
+      <section className="mx-auto flex max-w-4xl flex-col gap-12 pt-20">
+        {/* Intro */}
+        <div className="flex flex-col gap-6">
+          <p className="text-[11px] uppercase tracking-[0.4em] text-white/40">
+            Design system
+            <span className="mx-3 text-white/20">·</span>
+            <span className="text-white/55">Client : {clientName}</span>
+          </p>
+
+          <h1
+            className="font-sans font-extralight leading-[0.85] tracking-[-0.05em] text-[#F5F5F7]"
+            style={{ fontSize: "clamp(2.5rem, 8vw, 6rem)" }}
+          >
+            Design{" "}
+            <span className="font-serif italic font-normal text-white/85">
+              system
+            </span>
+          </h1>
+
+          <p className="max-w-xl text-balance font-serif text-base italic text-white/45 md:text-lg">
+            Téléverse les fichiers qui définissent le design de cet espace
+            client : charte graphique, logos, palette, typographie,
+            références. Tu pourras ensuite me les partager dans la
+            conversation pour qu&apos;on adapte l&apos;espace public.
+          </p>
+        </div>
+
+        {/* Upload zone */}
+        <UploadZone clientId={id} />
+
+        {/* Fichiers existants */}
+        <div className="flex flex-col gap-6">
+          <div className="flex items-baseline justify-between gap-4">
+            <h2 className="text-[11px] uppercase tracking-[0.4em] text-white/40">
+              Fichiers téléversés
+            </h2>
+            <span className="text-[11px] uppercase tracking-[0.32em] text-white/45">
+              {files.length} fichier{files.length > 1 ? "s" : ""}
+            </span>
+          </div>
+
+          {storageError && (
+            <p className="border-l-2 border-red-400/40 pl-4 text-[11px] uppercase tracking-[0.32em] text-red-300/80">
+              Erreur Storage · {storageError.message}
+            </p>
+          )}
+
+          {files.length === 0 && !storageError ? (
+            <p className="border-t border-white/10 pt-8 font-serif text-base italic text-white/40">
+              Aucun fichier pour ce client. Téléverse-en via la zone ci-dessus.
+            </p>
+          ) : (
+            <ul className="flex flex-col border-t border-white/10">
+              {files.map((file) => (
+                <li
+                  key={file.path}
+                  className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-b border-white/10 py-4"
+                >
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="truncate font-mono text-sm text-[#F5F5F7]">
+                      {displayName(file.name)}
+                    </span>
+                    <span className="font-mono text-[11px] text-white/35">
+                      {formatSize(file.size)}
+                      <span className="mx-2 text-white/20">·</span>
+                      {formatDate(file.created_at)}
+                      {file.mimetype && (
+                        <>
+                          <span className="mx-2 text-white/20">·</span>
+                          {file.mimetype}
+                        </>
+                      )}
+                    </span>
+                  </div>
+
+                  <div className="flex shrink-0 items-center gap-6">
+                    {file.url && (
+                      <a
+                        href={file.url}
+                        target="_blank"
+                        rel="noopener"
+                        download={displayName(file.name)}
+                        className="group inline-flex items-center gap-3 text-[11px] uppercase tracking-[0.32em] text-white/55 transition-colors hover:text-white"
+                      >
+                        <span>Télécharger</span>
+                        <span className="inline-block h-px w-4 bg-current transition-all duration-500 ease-out group-hover:w-10" />
+                      </a>
+                    )}
+                    <form action={deleteDesignFile}>
+                      <input type="hidden" name="client_id" value={id} />
+                      <input type="hidden" name="path" value={file.path} />
+                      <button
+                        type="submit"
+                        className="text-[11px] uppercase tracking-[0.32em] text-white/35 transition-colors hover:text-red-300/80"
+                      >
+                        Supprimer
+                      </button>
+                    </form>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}

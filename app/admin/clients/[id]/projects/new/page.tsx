@@ -1,0 +1,73 @@
+import type { Metadata } from "next";
+import { notFound, redirect } from "next/navigation";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
+import { isValidProjectType } from "@/lib/project-types";
+import { NewProjectForm } from "./new-project-form";
+import { TypePicker } from "./type-picker";
+
+export const metadata: Metadata = {
+  title: "Nouveau projet",
+  robots: { index: false, follow: false },
+};
+
+export const dynamic = "force-dynamic";
+
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export default async function NewProjectPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ type?: string }>;
+}) {
+  const { id } = await params;
+  const { type } = await searchParams;
+
+  if (!UUID_REGEX.test(id)) notFound();
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect(`/login?redirect=/admin/clients/${id}/projects/new`);
+  }
+
+  const ownerEmail = process.env.SPEETCH_OWNER_EMAIL?.toLowerCase();
+  if (ownerEmail && user.email?.toLowerCase() !== ownerEmail) {
+    redirect("/admin");
+  }
+
+  const admin = createAdminClient();
+  const { data: client } = await admin
+    .from("profiles")
+    .select("id, full_name, slug")
+    .eq("id", id)
+    .eq("is_owner", false)
+    .maybeSingle();
+
+  if (!client) notFound();
+
+  // Étape 2 — formulaire pré-rempli avec le type choisi
+  if (type && isValidProjectType(type)) {
+    return (
+      <NewProjectForm
+        clientId={client.id}
+        clientName={client.full_name ?? "Sans nom"}
+        clientSlug={client.slug ?? ""}
+        initialType={type}
+      />
+    );
+  }
+
+  // Étape 1 — sélecteur visuel de type
+  return (
+    <TypePicker
+      clientId={client.id}
+      clientName={client.full_name ?? "Sans nom"}
+    />
+  );
+}

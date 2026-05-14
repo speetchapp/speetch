@@ -1,0 +1,115 @@
+"use client";
+
+import { AnimatePresence, motion } from "framer-motion";
+import { useActionState } from "react";
+import { useFormStatus } from "react-dom";
+import { updateOwnerProfile, type UpdateOwnerState } from "./actions";
+import { Field } from "@/lib/ds";
+
+const EASE_OUT_EXPO: [number, number, number, number] = [0.22, 1, 0.36, 1];
+const INITIAL_STATE: UpdateOwnerState = { status: "idle" };
+
+function SubmitButton() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="group inline-flex items-center gap-3 text-[11px] uppercase tracking-[0.32em] text-white/75 transition-colors duration-300 hover:text-white disabled:cursor-wait disabled:opacity-50"
+    >
+      <span>{pending ? "Enregistrement…" : "Enregistrer"}</span>
+      <span className="inline-block h-px w-6 bg-current transition-all duration-500 ease-out group-hover:w-12" />
+    </button>
+  );
+}
+
+export function ProfileForm({
+  initialFullName,
+  initialAvatarUrl,
+  ownerEmail,
+}: {
+  initialFullName: string;
+  initialAvatarUrl: string;
+  ownerEmail: string | null;
+}) {
+  const [state, formAction] = useActionState(
+    updateOwnerProfile,
+    INITIAL_STATE,
+  );
+
+  return (
+    <motion.form
+      action={formAction}
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.9, delay: 0.2, ease: EASE_OUT_EXPO }}
+      className="flex w-full max-w-2xl flex-col gap-10"
+    >
+      <Field
+        label="Compte"
+        hint="lecture seule"
+      >
+        <span className="border-b border-white/10 bg-transparent pb-3 font-mono text-base text-white/55">
+          {ownerEmail ?? "—"}
+        </span>
+      </Field>
+
+      <Field label="Nom affiché">
+        <input
+          type="text"
+          name="full_name"
+          required
+          autoComplete="off"
+          defaultValue={initialFullName}
+          placeholder="Speetch"
+          className="border-b border-white/20 bg-transparent pb-3 font-sans text-xl font-light text-[#F5F5F7] caret-[#F5F5F7] placeholder:text-white/25 focus:border-white/80 focus:outline-none md:text-2xl"
+        />
+      </Field>
+
+      <Field label="Avatar (URL)" hint="optionnel">
+        <input
+          type="url"
+          name="avatar_url"
+          autoComplete="off"
+          defaultValue={initialAvatarUrl}
+          placeholder="https://…"
+          className="border-b border-white/20 bg-transparent pb-3 font-sans text-base font-light text-[#F5F5F7] caret-[#F5F5F7] placeholder:text-white/25 focus:border-white/80 focus:outline-none"
+        />
+      </Field>
+
+      <AnimatePresence>
+        {state.status === "error" && state.error && (
+          <motion.p
+            key={state.error}
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: EASE_OUT_EXPO }}
+            className="border-l-2 border-red-400/40 pl-4 text-[11px] uppercase tracking-[0.32em] text-red-300/80"
+          >
+            {state.error}
+          </motion.p>
+        )}
+        {state.status === "success" && (
+          <motion.p
+            key="ok"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: EASE_OUT_EXPO }}
+            className="border-l-2 border-emerald-400/40 pl-4 text-[11px] uppercase tracking-[0.32em] text-emerald-300/80"
+          >
+            Profil mis à jour.
+          </motion.p>
+        )}
+      </AnimatePresence>
+
+      <div className="flex items-center justify-between border-t border-white/10 pt-6">
+        <span className="text-[10px] uppercase tracking-[0.32em] text-white/30">
+          Mot de passe géré via ton compte Supabase Auth
+        </span>
+        <SubmitButton />
+      </div>
+    </motion.form>
+  );
+}
