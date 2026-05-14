@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { getProjectTypeLabel } from "@/lib/project-types";
 import { Button, Eyebrow, Hairline, StatusBadge } from "@/lib/ds";
+import { DeleteProjectButton } from "./[id]/projects/[projectId]/_components/delete-project-button";
 
 export const metadata: Metadata = {
   title: "Espaces clients",
@@ -222,10 +223,13 @@ function ClientListRow({ client }: { client: ClientRow }) {
           {projects.map((project) => {
             const typeLabel = getProjectTypeLabel(project.project_type);
             return (
-              <li key={project.id}>
+              <li
+                key={project.id}
+                className="group flex flex-wrap items-baseline gap-x-4 gap-y-1 py-1.5"
+              >
                 <Link
                   href={`/admin/clients/${client.id}/projects/${project.id}`}
-                  className="group flex flex-wrap items-baseline gap-x-4 gap-y-1 py-1.5 transition-colors"
+                  className="inline-flex items-baseline gap-x-4 transition-colors"
                 >
                   <span className="text-base font-light text-white/80 transition-colors group-hover:text-[#F5F5F7] md:text-lg">
                     {project.name}
@@ -240,12 +244,19 @@ function ClientListRow({ client }: { client: ClientRow }) {
                   ) : (
                     <StatusBadge tone="warning">Brouillon</StatusBadge>
                   )}
+                </Link>
+                <div className="ml-auto flex items-center gap-5">
+                  <DeleteProjectButton
+                    profileId={client.id}
+                    projectId={project.id}
+                    projectName={project.name}
+                  />
                   <Hairline
                     width="md"
                     hover="xl"
-                    className="ml-auto bg-white/25 group-hover:bg-white"
+                    className="bg-white/25 group-hover:bg-white"
                   />
-                </Link>
+                </div>
               </li>
             );
           })}
