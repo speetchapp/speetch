@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Button } from "@/lib/ds";
+import { AlertDialog, Button, ConfirmDialog } from "@/lib/ds";
 import { deleteProject } from "../actions";
 
 export function DeleteProjectButton({
@@ -16,39 +16,45 @@ export function DeleteProjectButton({
   className?: string;
 }) {
   const [pending, startTransition] = useTransition();
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function onClick() {
-    if (
-      !window.confirm(
-        `Supprimer définitivement le projet « ${projectName} » et toutes ses pages ?`,
-      )
-    ) {
-      return;
-    }
-    setError(null);
+  function onConfirm() {
     startTransition(async () => {
       const result = await deleteProject({ profileId, projectId });
       if (!result.ok) {
         setError(result.error);
-        window.alert(`Erreur : ${result.error}`);
       }
+      setConfirmOpen(false);
     });
   }
 
   return (
     <>
       <Button
-        onClick={onClick}
-        disabled={pending}
+        onClick={() => setConfirmOpen(true)}
         variant="danger"
         className={className}
-        pending={pending}
-        pendingLabel="Suppression…"
       >
         Supprimer
       </Button>
-      {error && <span className="sr-only">{error}</span>}
+      <ConfirmDialog
+        open={confirmOpen}
+        tone="danger"
+        title={`Supprimer « ${projectName} » ?`}
+        description="Cette action supprime aussi toutes les pages du projet et leurs médias. Irréversible."
+        confirmLabel="Supprimer définitivement"
+        cancelLabel="Annuler"
+        pending={pending}
+        onConfirm={onConfirm}
+        onCancel={() => setConfirmOpen(false)}
+      />
+      <AlertDialog
+        open={error !== null}
+        title="Suppression impossible"
+        description={error}
+        onClose={() => setError(null)}
+      />
     </>
   );
 }

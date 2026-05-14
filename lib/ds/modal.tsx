@@ -7,12 +7,15 @@
  * - Esc pour fermer
  * - Entrée framer-motion : opacity + y:18 → 0 (400ms, ease-out-expo)
  * - Header optionnel (title + sub-title + actions à droite + bouton fermer)
+ * - Rendu via React Portal sur document.body — permet l'empilement correct
+ *   d'une Modal dans une autre (ex: ConfirmDialog au-dessus de MediaLibraryModal).
  *
  * Documentation : /admin/settings/design-system § 10 Modales.
  */
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
 
 const EASE_OUT_EXPO: [number, number, number, number] = [0.22, 1, 0.36, 1];
@@ -22,6 +25,13 @@ export function Modal({
   onClose,
   children,
   className,
+  /**
+   * - `panel` (défaut) : pleine hauteur sur mobile, max-w-5xl 85vh sur desktop.
+   *   Idéal pour la médiathèque, les éditeurs, les listings.
+   * - `compact` : carte centrée petite (max-w-md), rounded sur mobile aussi.
+   *   Idéal pour les dialogues de confirmation et d'alerte.
+   */
+  size = "panel",
   /** z-index custom. Défaut z-[80] pour passer au-dessus de la sidebar. */
   zIndex = 80,
 }: {
@@ -29,8 +39,14 @@ export function Modal({
   onClose: () => void;
   children: React.ReactNode;
   className?: string;
+  size?: "panel" | "compact";
   zIndex?: number;
 }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
@@ -40,7 +56,9 @@ export function Modal({
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  return (
+  if (!mounted) return null;
+
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
@@ -48,7 +66,12 @@ export function Modal({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.25 }}
-          className="fixed inset-0 flex items-stretch justify-center bg-black/85 backdrop-blur-sm md:items-center md:p-6"
+          className={cn(
+            "fixed inset-0 flex items-center justify-center bg-black/85 backdrop-blur-sm",
+            size === "panel"
+              ? "items-stretch md:items-center md:p-6"
+              : "p-4 md:p-6",
+          )}
           style={{ zIndex }}
           onClick={(e) => {
             if (e.target === e.currentTarget) onClose();
@@ -60,7 +83,10 @@ export function Modal({
             exit={{ opacity: 0, y: 12 }}
             transition={{ duration: 0.4, ease: EASE_OUT_EXPO }}
             className={cn(
-              "relative flex h-full w-full max-w-5xl flex-col overflow-hidden bg-[#0a0a0a] md:h-[85vh] md:rounded-2xl md:border md:border-white/10",
+              "relative flex flex-col overflow-hidden bg-[#0a0a0a] border border-white/10",
+              size === "panel"
+                ? "h-full w-full max-w-5xl md:h-[85vh] md:rounded-2xl md:border md:border-white/10 max-md:border-0"
+                : "w-full max-w-md rounded-2xl",
               className,
             )}
           >
@@ -68,7 +94,8 @@ export function Modal({
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   );
 }
 

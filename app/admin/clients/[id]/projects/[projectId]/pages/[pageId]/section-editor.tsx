@@ -1,10 +1,11 @@
 "use client";
 
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import {
   getSectionTypeLabel,
   type Section,
 } from "@/lib/section-types";
+import { ConfirmDialog } from "@/lib/ds";
 import { AutosaveField, type AutosaveResult } from "./autosave-input";
 import { MediaUploader } from "./media-uploader";
 import { updateSection } from "./actions";
@@ -30,6 +31,7 @@ export function SectionEditor({
   onMove,
 }: Props) {
   const [pending, startTransition] = useTransition();
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   async function savePatch(
     patch: Partial<Section>,
@@ -45,12 +47,10 @@ export function SectionEditor({
     return result;
   }
 
-  function confirmRemove() {
-    if (!window.confirm("Supprimer cette section ? Les médias seront aussi effacés.")) {
-      return;
-    }
+  function handleConfirmRemove() {
     startTransition(() => {
       onRemove();
+      setConfirmOpen(false);
     });
   }
 
@@ -89,7 +89,7 @@ export function SectionEditor({
           </button>
           <button
             type="button"
-            onClick={confirmRemove}
+            onClick={() => setConfirmOpen(true)}
             disabled={pending}
             aria-label="Supprimer la section"
             className="rounded-md px-2 py-1 text-sm text-white/55 transition-colors hover:bg-white/[0.05] hover:text-red-300/80 disabled:opacity-30"
@@ -98,6 +98,18 @@ export function SectionEditor({
           </button>
         </div>
       </header>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        tone="danger"
+        title="Supprimer cette section ?"
+        description="Les médias attachés à la section seront aussi effacés du stockage. Action irréversible."
+        confirmLabel="Supprimer"
+        cancelLabel="Annuler"
+        pending={pending}
+        onConfirm={handleConfirmRemove}
+        onCancel={() => setConfirmOpen(false)}
+      />
 
       <AutosaveField
         initialValue={section.title ?? ""}

@@ -8,7 +8,7 @@ import {
   type SectionType,
 } from "@/lib/section-types";
 import type { Page, PageContent } from "@/types/database";
-import { Button, Eyebrow, StatusBadge } from "@/lib/ds";
+import { Button, ConfirmDialog, Eyebrow, StatusBadge } from "@/lib/ds";
 import { AutosaveField, type AutosaveResult } from "./autosave-input";
 import { SectionEditor } from "./section-editor";
 import {
@@ -40,6 +40,7 @@ export function PageEditor({
   const [page, setPage] = useState<Page>(initialPage);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   const content: PageContent = (page.content as PageContent) ?? {};
   const sections: Section[] = content.sections ?? [];
@@ -154,14 +155,7 @@ export function PageEditor({
     });
   }
 
-  function handleDeletePage() {
-    if (
-      !window.confirm(
-        "Supprimer définitivement cette page et tous ses médias ?",
-      )
-    ) {
-      return;
-    }
+  function confirmDeletePage() {
     startTransition(async () => {
       await deletePage(context);
     });
@@ -248,14 +242,13 @@ export function PageEditor({
                 )}
               </button>
 
-              <button
-                type="button"
-                onClick={handleDeletePage}
+              <Button
+                onClick={() => setConfirmDeleteOpen(true)}
                 disabled={pending}
-                className="text-[11px] uppercase tracking-[0.32em] text-white/40 transition-colors hover:text-red-300/80 disabled:opacity-50"
+                variant="danger"
               >
                 Supprimer
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -340,6 +333,21 @@ export function PageEditor({
           </Button>
         </div>
       </section>
+
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        tone="danger"
+        title="Supprimer définitivement cette page ?"
+        description="Toutes les sections et leurs médias seront effacés. Action irréversible."
+        confirmLabel="Supprimer la page"
+        cancelLabel="Annuler"
+        pending={pending}
+        onConfirm={() => {
+          setConfirmDeleteOpen(false);
+          confirmDeletePage();
+        }}
+        onCancel={() => setConfirmDeleteOpen(false)}
+      />
     </div>
   );
 }

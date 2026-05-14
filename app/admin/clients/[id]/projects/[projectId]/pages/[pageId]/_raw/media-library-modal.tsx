@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import { Button, Modal, ModalHeader } from "@/lib/ds";
+import { Button, ConfirmDialog, Modal, ModalHeader } from "@/lib/ds";
 import {
   deleteProjectMedia,
   listProjectMedia,
@@ -34,6 +34,8 @@ export function MediaLibraryModal({
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const [uploading, setUploading] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deletingItem, setDeletingItem] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -65,14 +67,18 @@ export function MediaLibraryModal({
     setUploading(false);
   }
 
-  async function handleDelete(path: string) {
-    if (!window.confirm("Supprimer ce média de la médiathèque ?")) return;
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeletingItem(true);
+    const path = deleteTarget;
     const res = await deleteProjectMedia(projectId, path);
     if (res.ok) {
       setItems((prev) => (prev ? prev.filter((i) => i.path !== path) : prev));
     } else {
       setError(res.error);
     }
+    setDeletingItem(false);
+    setDeleteTarget(null);
   }
 
   return (
@@ -177,7 +183,7 @@ export function MediaLibraryModal({
                         </span>
                         <button
                           type="button"
-                          onClick={() => handleDelete(item.path)}
+                          onClick={() => setDeleteTarget(item.path)}
                           className="text-[10px] uppercase tracking-[0.28em] text-white/35 transition-colors hover:text-red-300/80"
                         >
                           Suppr.
@@ -198,6 +204,19 @@ export function MediaLibraryModal({
               Chargement de la médiathèque…
             </div>
           )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        tone="danger"
+        title="Supprimer ce média ?"
+        description="Le fichier sera retiré du stockage. Si une page l'utilise, le rendu deviendra cassé."
+        confirmLabel="Supprimer le média"
+        cancelLabel="Annuler"
+        pending={deletingItem}
+        zIndex={95}
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </Modal>
   );
 }

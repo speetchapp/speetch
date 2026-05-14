@@ -1,31 +1,8 @@
 "use client";
 
-import { useFormStatus } from "react-dom";
+import { useState, useTransition } from "react";
+import { Button, ConfirmDialog } from "@/lib/ds";
 import { deleteTemplate } from "./new/actions";
-
-function DeleteButton({ usageCount }: { usageCount: number }) {
-  const { pending } = useFormStatus();
-  return (
-    <button
-      type="submit"
-      disabled={pending}
-      onClick={(e) => {
-        const message =
-          usageCount > 0
-            ? `Supprimer ce template ? ${usageCount} page${
-                usageCount > 1 ? "s" : ""
-              } l'utilise${usageCount > 1 ? "nt" : ""} déjà — elles garderont leur contenu mais perdront le lien vers le template.`
-            : "Supprimer ce template définitivement ?";
-        if (!window.confirm(message)) {
-          e.preventDefault();
-        }
-      }}
-      className="text-[11px] uppercase tracking-[0.32em] text-white/40 transition-colors hover:text-red-300/80 disabled:opacity-50"
-    >
-      {pending ? "Suppression…" : "Supprimer"}
-    </button>
-  );
-}
 
 export function DeleteTemplateForm({
   templateId,
@@ -34,10 +11,44 @@ export function DeleteTemplateForm({
   templateId: string;
   usageCount: number;
 }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
+
+  const description =
+    usageCount > 0
+      ? `${usageCount} page${usageCount > 1 ? "s" : ""} ${usageCount > 1 ? "utilisent" : "utilise"} déjà ce template. Elles garderont leur contenu mais perdront le lien vers le template.`
+      : "Action irréversible.";
+
+  function onConfirm() {
+    const formData = new FormData();
+    formData.append("template_id", templateId);
+    startTransition(async () => {
+      await deleteTemplate(formData);
+      setConfirmOpen(false);
+    });
+  }
+
   return (
-    <form action={deleteTemplate}>
-      <input type="hidden" name="template_id" value={templateId} />
-      <DeleteButton usageCount={usageCount} />
-    </form>
+    <>
+      <Button
+        onClick={() => setConfirmOpen(true)}
+        variant="danger"
+        pending={pending}
+        pendingLabel="Suppression…"
+      >
+        Supprimer
+      </Button>
+      <ConfirmDialog
+        open={confirmOpen}
+        tone="danger"
+        title="Supprimer ce template ?"
+        description={description}
+        confirmLabel="Supprimer le template"
+        cancelLabel="Annuler"
+        pending={pending}
+        onConfirm={onConfirm}
+        onCancel={() => setConfirmOpen(false)}
+      />
+    </>
   );
 }

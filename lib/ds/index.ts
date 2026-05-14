@@ -17,3 +17,4 @@ export { Field } from "./field";
 export { StatusBadge } from "./status-badge";
 export { Chip } from "./chip";
 export { Modal, ModalHeader } from "./modal";
+export { ConfirmDialog, AlertDialog } from "./confirm-dialog";

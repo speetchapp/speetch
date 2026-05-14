@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import type { Page, PageContent } from "@/types/database";
-import { Button, Eyebrow, StatusBadge } from "@/lib/ds";
+import { Button, ConfirmDialog, Eyebrow, StatusBadge } from "@/lib/ds";
 import { AutosaveField, type AutosaveResult } from "../autosave-input";
 import {
   deletePage,
@@ -175,6 +175,7 @@ export function RawHtmlPageEditor({
   );
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   // Target unifiée pour la modale médiathèque : soit un override d'image statique,
   // soit un champ image dans l'objet directions.
@@ -316,14 +317,7 @@ export function RawHtmlPageEditor({
     });
   }
 
-  function handleDeletePage() {
-    if (
-      !window.confirm(
-        "Supprimer définitivement cette page et tous ses médias ?",
-      )
-    ) {
-      return;
-    }
+  function confirmDeletePage() {
     startTransition(async () => {
       await deletePage({
         profileId: clientId,
@@ -491,14 +485,13 @@ export function RawHtmlPageEditor({
                   </>
                 )}
               </button>
-              <button
-                type="button"
-                onClick={handleDeletePage}
+              <Button
+                onClick={() => setConfirmDeleteOpen(true)}
                 disabled={pending}
-                className="text-[11px] uppercase tracking-[0.32em] text-white/40 transition-colors hover:text-red-300/80 disabled:opacity-50"
+                variant="danger"
               >
                 Supprimer
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -778,6 +771,21 @@ export function RawHtmlPageEditor({
           onClose={() => setMediaTarget(null)}
         />
       )}
+
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        tone="danger"
+        title="Supprimer définitivement cette page ?"
+        description="Tous les overrides texte/image seront perdus et les médias associés effacés. Action irréversible."
+        confirmLabel="Supprimer la page"
+        cancelLabel="Annuler"
+        pending={pending}
+        onConfirm={() => {
+          setConfirmDeleteOpen(false);
+          confirmDeletePage();
+        }}
+        onCancel={() => setConfirmDeleteOpen(false)}
+      />
     </div>
   );
 }
