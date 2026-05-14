@@ -106,16 +106,30 @@ export default async function PublicPageRoute({ params }: Props) {
 
   const style = content.meta?.style;
 
+  const navPages = ordered
+    .filter(
+      (p): p is { page_id: string; page_slug: string; page_name: string; page_position: number } =>
+        !!p.page_slug && !!p.page_name,
+    )
+    .map((p) => ({ slug: p.page_slug, name: p.page_name }));
+
   if (style === "raw_html" && typeof content.meta?.raw_html === "string") {
+    const applySpeetchDs =
+      (content.meta as { apply_speetch_ds?: unknown } | undefined)
+        ?.apply_speetch_ds === true;
     return (
       <RawHtmlPageView
         clientSlug={page.client_slug}
         clientName={page.client_name ?? "Espace client"}
+        projectSlug={page.project_slug}
         projectName={page.project_name ?? "Projet"}
         pageName={page.page_name ?? "Page"}
+        pageSlug={page.page_slug}
         rawHtml={content.meta.raw_html}
         textOverrides={content.meta.text_overrides}
         imageOverrides={content.meta.image_overrides}
+        applySpeetchDs={applySpeetchDs}
+        pages={navPages}
       />
     );
   }
@@ -129,9 +143,11 @@ export default async function PublicPageRoute({ params }: Props) {
         projectName={page.project_name ?? "Projet"}
         projectType={page.project_type}
         pageName={page.page_name ?? "Page"}
+        pageSlug={page.page_slug}
         content={content}
         prev={prevTarget}
         next={nextTarget}
+        pages={navPages}
       />
     );
   }
@@ -145,9 +161,11 @@ export default async function PublicPageRoute({ params }: Props) {
         projectName={page.project_name ?? "Projet"}
         projectType={page.project_type}
         pageName={page.page_name ?? "Page"}
+        pageSlug={page.page_slug}
         content={content}
         prev={prevTarget}
         next={nextTarget}
+        pages={navPages}
       />
     );
   }
@@ -160,9 +178,11 @@ export default async function PublicPageRoute({ params }: Props) {
       projectName={page.project_name ?? "Projet"}
       projectType={page.project_type}
       pageName={page.page_name ?? "Page"}
+      pageSlug={page.page_slug}
       content={content}
       prev={prevTarget}
       next={nextTarget}
+      pages={navPages}
     />
   );
 }

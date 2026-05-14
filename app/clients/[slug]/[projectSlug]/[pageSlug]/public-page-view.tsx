@@ -6,6 +6,7 @@ import Link from "next/link";
 import type { PageContent } from "@/types/database";
 import { getProjectTypeLabel } from "@/lib/project-types";
 import { Hairline } from "@/lib/ds";
+import { PagesDropdown, type PageNavItem } from "./pages-dropdown";
 
 const EASE_OUT_EXPO: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
@@ -18,9 +19,11 @@ export function PublicPageView({
   projectName,
   projectType,
   pageName,
+  pageSlug,
   content,
   prev,
   next,
+  pages,
 }: {
   clientSlug: string;
   clientName: string;
@@ -28,9 +31,11 @@ export function PublicPageView({
   projectName: string;
   projectType: string | null;
   pageName: string;
+  pageSlug: string;
   content: PageContent;
   prev: { slug: string; name: string } | null;
   next: { slug: string; name: string } | null;
+  pages: PageNavItem[];
 }) {
   const intro = content.intro ?? null;
   const sections = content.sections ?? [];
@@ -52,9 +57,13 @@ export function PublicPageView({
           <Hairline width="md" hover="lg" />
           <span>{clientName}</span>
         </Link>
-        <span className="hidden text-[11px] uppercase tracking-[0.28em] text-white/40 md:inline">
-          {projectName}
-        </span>
+        <PagesDropdown
+          clientSlug={clientSlug}
+          projectSlug={projectSlug}
+          currentSlug={pageSlug}
+          pages={pages}
+          theme="dark"
+        />
       </motion.header>
 
       {/* Hero page */}

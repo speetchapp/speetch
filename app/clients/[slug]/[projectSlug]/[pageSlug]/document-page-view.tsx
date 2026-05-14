@@ -7,6 +7,7 @@ import { useEffect } from "react";
 import type { PageContent } from "@/types/database";
 import { getProjectTypeLabel } from "@/lib/project-types";
 import { Hairline } from "@/lib/ds";
+import { PagesDropdown, type PageNavItem } from "./pages-dropdown";
 
 const EASE_OUT_EXPO: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
@@ -22,12 +23,14 @@ export function DocumentPageView({
   clientSlug,
   clientName,
   projectName,
-  projectSlug: _projectSlug,
+  projectSlug,
   projectType,
   pageName,
+  pageSlug,
   content,
   prev,
   next,
+  pages,
 }: {
   clientSlug: string;
   clientName: string;
@@ -35,9 +38,11 @@ export function DocumentPageView({
   projectName: string;
   projectType: string | null;
   pageName: string;
+  pageSlug: string;
   content: PageContent;
   prev: { slug: string; name: string } | null;
   next: { slug: string; name: string } | null;
+  pages: PageNavItem[];
 }) {
   useEffect(() => {
     document.body.classList.add("doc-mode-active");
@@ -68,9 +73,13 @@ export function DocumentPageView({
           <Hairline width="md" hover="lg" />
           <span>{clientName}</span>
         </Link>
-        <span className="doc-italic hidden text-sm md:inline">
-          {projectName}
-        </span>
+        <PagesDropdown
+          clientSlug={clientSlug}
+          projectSlug={projectSlug}
+          currentSlug={pageSlug}
+          pages={pages}
+          theme="light"
+        />
       </motion.header>
 
       {/* Document */}
@@ -154,14 +163,14 @@ export function DocumentPageView({
             label="Précédent"
             target={prev}
             clientSlug={clientSlug}
-            projectSlug={_projectSlug}
+            projectSlug={projectSlug}
             align="left"
           />
           <DocNavLink
             label="Suivant"
             target={next}
             clientSlug={clientSlug}
-            projectSlug={_projectSlug}
+            projectSlug={projectSlug}
             align="right"
           />
         </nav>

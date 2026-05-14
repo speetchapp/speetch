@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Hairline } from "@/lib/ds";
+import { SPEETCH_OVERLAY_CSS } from "@/lib/speetch-overlay-css";
+import { PagesDropdown, type PageNavItem } from "./pages-dropdown";
 
 /**
  * Rendu "raw HTML" — utilisé pour les pages dont content.meta.style = "raw_html".
@@ -25,28 +27,38 @@ import { Hairline } from "@/lib/ds";
 export function RawHtmlPageView({
   clientSlug,
   clientName,
+  projectSlug,
   projectName,
   pageName,
+  pageSlug,
   rawHtml,
   textOverrides,
   imageOverrides,
+  applySpeetchDs,
+  pages,
 }: {
   clientSlug: string;
   clientName: string;
+  projectSlug: string;
   projectName: string;
   pageName: string;
+  pageSlug: string;
   rawHtml: string;
   textOverrides?: Record<string, string>;
   imageOverrides?: Record<string, string>;
+  applySpeetchDs?: boolean;
+  pages: PageNavItem[];
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [height, setHeight] = useState<number>(0);
 
-  // HTML enrichi du script de substitution si des overrides existent.
-  const srcDoc = useMemo(
-    () => injectOverridesScript(rawHtml, textOverrides, imageOverrides),
-    [rawHtml, textOverrides, imageOverrides],
-  );
+  const srcDoc = useMemo(() => {
+    let result = injectOverridesScript(rawHtml, textOverrides, imageOverrides);
+    if (applySpeetchDs) {
+      result = injectSpeetchOverlay(result);
+    }
+    return result;
+  }, [rawHtml, textOverrides, imageOverrides, applySpeetchDs]);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -135,9 +147,12 @@ export function RawHtmlPageView({
           <span className="mx-3 text-white/20">·</span>
           {pageName}
         </span>
-        <span className="text-[10px] uppercase tracking-[0.32em] text-white/40">
-          Reproduction fidèle
-        </span>
+        <PagesDropdown
+          clientSlug={clientSlug}
+          projectSlug={projectSlug}
+          currentSlug={pageSlug}
+          pages={pages}
+        />
       </header>
 
       {/* Document */}
@@ -262,4 +277,30 @@ function injectOverridesScript(
     return html.slice(0, idx) + script + html.slice(idx);
   }
   return html + script;
+}
+
+/**
+ * Injecte la feuille de style Speetch en toute fin de <head> pour outre-passer
+ * le CSS source. Même logique que le viewer admin — partage la constante
+ * SPEETCH_OVERLAY_CSS définie dans lib/.
+ */
+function injectSpeetchOverlay(html: string): string {
+  const escaped = SPEETCH_OVERLAY_CSS.replace(/<\/style/gi, "<\\/style");
+  const styleBlock = `\n<style data-speetch-overlay="true">\n${escaped}\n</style>\n`;
+  const headCloseIdx = html.toLowerCase().lastIndexOf("</head>");
+  if (headCloseIdx >= 0) {
+    return html.slice(0, headCloseIdx) + styleBlock + html.slice(headCloseIdx);
+  }
+  const bodyOpenIdx = html.toLowerCase().indexOf("<body");
+  if (bodyOpenIdx >= 0) {
+    const bodyTagEnd = html.indexOf(">", bodyOpenIdx);
+    if (bodyTagEnd >= 0) {
+      return (
+        html.slice(0, bodyTagEnd + 1) +
+        styleBlock +
+        html.slice(bodyTagEnd + 1)
+      );
+    }
+  }
+  return styleBlock + html;
 }

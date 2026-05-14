@@ -6,6 +6,7 @@ import { forwardRef, useEffect, useRef, useState } from "react";
 import type { PageContent } from "@/types/database";
 import { getProjectTypeLabel } from "@/lib/project-types";
 import { Eyebrow, Hairline, Sceau } from "@/lib/ds";
+import { PagesDropdown, type PageNavItem } from "./pages-dropdown";
 
 const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
@@ -29,10 +30,12 @@ export function FwaPageView({
   projectName,
   projectType,
   pageName,
+  pageSlug,
   content,
   prev,
   next,
   projectSlug,
+  pages,
 }: {
   clientSlug: string;
   clientName: string;
@@ -40,9 +43,11 @@ export function FwaPageView({
   projectName: string;
   projectType: string | null;
   pageName: string;
+  pageSlug: string;
   content: PageContent;
   prev: NavTarget;
   next: NavTarget;
+  pages: PageNavItem[];
 }) {
   const sections = content.sections ?? [];
   const intro = content.intro ?? "";
@@ -178,7 +183,15 @@ export function FwaPageView({
           <span className="mx-3 text-white/20">·</span>
           {pageName}
         </span>
-        <span>FWA Grade</span>
+        <span className="pointer-events-auto">
+          <PagesDropdown
+            clientSlug={clientSlug}
+            projectSlug={projectSlug}
+            currentSlug={pageSlug}
+            pages={pages}
+            theme="dark"
+          />
+        </span>
       </header>
 
       {/* Index */}

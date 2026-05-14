@@ -1,0 +1,307 @@
+/**
+ * Conversion HTML → ContextPageContent via Claude API.
+ *
+ * Pipeline pour les pages de contexte INTERNE par client (briefs, artifacts
+ * Claude, etc.). Distinct du helper `templates/_lib/html-conversion` parce
+ * que :
+ *  - on génère AUSSI un title + summary (Claude propose un nom de note)
+ *  - le prompt est orienté "document interne" (pas portfolio)
+ *  - le PageContent produit ne contient que des sections "text" (les notes
+ *    internes sont quasi exclusivement textuelles)
+ *
+ * Hors fichier "use server" parce que seul des async functions peuvent être
+ * exportées d'un module Server Action.
+ */
+
+import Anthropic from "@anthropic-ai/sdk";
+import type { PageContent } from "@/types/database";
+
+export const MAX_HTML_SIZE = 2 * 1024 * 1024; // 2 MB
+export const URL_FETCH_TIMEOUT_MS = 15_000;
+export const URL_MAX_BYTES = MAX_HTML_SIZE;
+
+const SYSTEM_PROMPT = `Tu convertis une page HTML (artifact Claude, page web, brief interne, etc.) en JSON pour Speetch — agence créative à Paris.
+
+Le résultat sert de **note de contexte interne** pour l'admin (jamais montrée aux clients). Objectif : un document propre, lisible rapidement, qui synthétise les infos utiles pour qu'une IA assistante comprenne le projet du client.
+
+Sortie attendue : un OBJET JSON strictement conforme au schéma fourni (pas de markdown, pas de préambule, juste le JSON).
+
+Schéma sémantique :
+{
+  "title": string,             // 3-8 mots, titre éditorial de la note
+  "summary": string,           // 1-2 phrases, résumé du contenu pour scan rapide
+  "intro": string,             // 2-3 phrases d'introduction posant le contexte
+  "sections": Array<{ "type": "text", "title": string, "body": string }>
+}
+
+Règles d'extraction :
+
+1. title : court, descriptif, éditorial. Ex : "Brief de marque — refonte Maison Lemaire", "Recherche concurrence agences créatives Paris", "Conversation Claude — positionnement Speetch".
+
+2. summary : factuel et utile pour un humain qui veut décider s'il ouvre la note. 1-2 phrases max.
+
+3. intro : pose le contexte (origine du document, sujet général, à quoi ça sert). 2-3 phrases. Ton éditorial mais factuel.
+
+4. sections : découpe en sections THÉMATIQUES (pas en chapitres HTML). Chaque section a :
+   - title : un titre court (3-7 mots) qui résume la section
+   - body : le contenu de la section en texte plat avec sauts de ligne "\\n\\n" entre paragraphes. Préserve :
+     • Les listes : transforme en lignes "• item" séparées par \\n
+     • Les emphases importantes : entoure de « guillemets français » pour les citations
+     • Les chiffres / données chiffrées : garde tels quels
+     • Les noms propres, marques, dates : préserve fidèlement
+
+5. IGNORE complètement (ne crée pas de section pour) :
+   - Métadonnées HTML (head, scripts, styles)
+   - Navigation, footer, breadcrumbs, cookies
+   - Boilerplate / contenu non-substantiel
+   - Images, vidéos, embeds (cette feature ne gère que du texte)
+
+6. Si le HTML est très long, regroupe par THÈME plutôt que de tout détailler.
+
+7. Préserve la LANGUE du HTML source (FR → FR, EN → EN).
+
+8. Si une section serait vide ou redondante, OMETS-la.
+
+9. Si l'HTML est minuscule ou inutilisable, renvoie title/summary/intro courts et sections vide [] — ne hallucine pas de contenu.
+
+10. Reformule pour la lisibilité : tu peux condenser, fusionner, réorganiser. C'est une note de synthèse, pas une transcription.`;
+
+const CONTEXT_CONTENT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "summary", "intro", "sections"],
+  properties: {
+    title: { type: "string" },
+    summary: { type: "string" },
+    intro: { type: "string" },
+    sections: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "title", "body"],
+        properties: {
+          type: { const: "text" },
+          title: { type: "string" },
+          body: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
+type AiContextSection = { type: "text"; title: string; body: string };
+
+type AiContextPayload = {
+  title: string;
+  summary: string;
+  intro: string;
+  sections: AiContextSection[];
+};
+
+function validateAiPayload(value: unknown): AiContextPayload | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.title !== "string") return null;
+  if (typeof v.summary !== "string") return null;
+  if (typeof v.intro !== "string") return null;
+  if (!Array.isArray(v.sections)) return null;
+  return v as AiContextPayload;
+}
+
+export type ContextConversionResult =
+  | {
+      ok: true;
+      title: string;
+      summary: string;
+      content: PageContent;
+    }
+  | { ok: false; error: string };
+
+/**
+ * Appelle Claude pour transformer un HTML en note de contexte structurée.
+ */
+export async function convertHtmlToContext(
+  html: string,
+): Promise<ContextConversionResult> {
+  const anthropic = new Anthropic();
+
+  let aiPayload: AiContextPayload;
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-opus-4-7",
+      max_tokens: 16000,
+      system: [
+        {
+          type: "text",
+          text: SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `Voici le HTML à convertir en note de contexte interne :\n\n${html}`,
+            },
+          ],
+        },
+      ],
+      output_config: {
+        format: {
+          type: "json_schema",
+          schema: CONTEXT_CONTENT_SCHEMA,
+        },
+      },
+    });
+
+    const textBlock = response.content.find((b) => b.type === "text");
+    if (!textBlock || textBlock.type !== "text") {
+      return { ok: false, error: "Réponse Claude vide ou non textuelle." };
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(textBlock.text);
+    } catch {
+      console.error("[convertHtmlToContext] JSON.parse failed:", textBlock.text);
+      return { ok: false, error: "La réponse Claude n'est pas un JSON valide." };
+    }
+
+    const validated = validateAiPayload(parsed);
+    if (!validated) {
+      return { ok: false, error: "Structure JSON Claude inattendue." };
+    }
+    aiPayload = validated;
+  } catch (err) {
+    if (err instanceof Anthropic.APIError) {
+      console.error(
+        "[convertHtmlToContext] Anthropic API error:",
+        err.status,
+        err.message,
+      );
+      return {
+        ok: false,
+        error: `Erreur API Claude (${err.status}) : ${err.message}`,
+      };
+    }
+    console.error("[convertHtmlToContext] unexpected error:", err);
+    return { ok: false, error: "Erreur inattendue lors de l'appel Claude API." };
+  }
+
+  const content: PageContent = {
+    intro: aiPayload.intro,
+    sections: aiPayload.sections.map((s, i) => ({
+      id: `__SECTION_${i + 1}__`,
+      type: "text" as const,
+      title: s.title,
+      body: s.body,
+    })),
+    meta: {
+      style: "document",
+    },
+  };
+
+  return {
+    ok: true,
+    title: aiPayload.title,
+    summary: aiPayload.summary,
+    content,
+  };
+}
+
+export type FetchHtmlResult =
+  | { ok: true; html: string }
+  | { ok: false; error: string };
+
+/**
+ * Fetch une URL et renvoie son HTML. Aucune restriction de domaine
+ * (admin-only). Garde-fous : timeout, content-type, taille.
+ */
+export async function fetchHtmlFromUrl(url: string): Promise<FetchHtmlResult> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, error: "URL invalide." };
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, error: "Seuls http:// et https:// sont supportés." };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), URL_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(parsed.toString(), {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (compatible; SpeetchContextBot/1.0; +https://speetch.fr)",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    });
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: `Le serveur a répondu ${response.status} ${response.statusText}.`,
+      };
+    }
+
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    if (
+      !contentType.includes("html") &&
+      !contentType.includes("xml") &&
+      !contentType.includes("text/plain")
+    ) {
+      return {
+        ok: false,
+        error: `Type de contenu inattendu : ${contentType || "inconnu"}.`,
+      };
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      const html = await response.text();
+      if (html.length > URL_MAX_BYTES) {
+        return { ok: false, error: "Réponse trop volumineuse (max 2 MB)." };
+      }
+      return { ok: true, html };
+    }
+
+    const chunks: Uint8Array[] = [];
+    let totalSize = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalSize += value.byteLength;
+      if (totalSize > URL_MAX_BYTES) {
+        await reader.cancel();
+        return { ok: false, error: "Réponse trop volumineuse (max 2 MB)." };
+      }
+      chunks.push(value);
+    }
+    const decoder = new TextDecoder("utf-8");
+    const html = chunks.map((c) => decoder.decode(c, { stream: true })).join("");
+    if (html.trim().length < 20) {
+      return { ok: false, error: "HTML récupéré trop court pour être exploité." };
+    }
+    return { ok: true, html };
+  } catch (err) {
+    if ((err as { name?: string }).name === "AbortError") {
+      return { ok: false, error: "Le fetch a expiré (timeout 15 s)." };
+    }
+    console.error("[fetchHtmlFromUrl] error:", err);
+    return {
+      ok: false,
+      error: `Impossible de récupérer l'URL : ${(err as Error).message ?? "erreur inconnue"}.`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
