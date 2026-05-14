@@ -8,7 +8,7 @@ import {
   type SectionType,
 } from "@/lib/section-types";
 import type { Page, PageContent } from "@/types/database";
-import { Button, Eyebrow, Hairline, StatusBadge } from "@/lib/ds";
+import { Button, Eyebrow, StatusBadge } from "@/lib/ds";
 import { AutosaveField, type AutosaveResult } from "./autosave-input";
 import { SectionEditor } from "./section-editor";
 import {
@@ -275,12 +275,12 @@ export function PageEditor({
                 template. L&apos;intro et les sections ci-dessous ne sont pas
                 rendues sur la page publique. Pour mettre à jour le contenu,
                 ré-importe un nouveau template depuis{" "}
-                <a
+                <Link
                   href="/admin/templates/new"
                   className="underline decoration-white/30 transition-colors hover:text-white"
                 >
                   Réglages → Templates → Nouveau
-                </a>
+                </Link>
                 .
               </p>
             </div>

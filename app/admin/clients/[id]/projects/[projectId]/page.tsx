@@ -9,7 +9,7 @@ import {
   getPageTemplate,
   isDbTemplateId,
 } from "@/lib/page-templates";
-import { Button, Chip, Eyebrow, Hairline, StatusBadge } from "@/lib/ds";
+import { Button, Chip, Hairline, StatusBadge } from "@/lib/ds";
 import { DetachPageButton } from "./_components/detach-page-button";
 
 export const metadata: Metadata = {

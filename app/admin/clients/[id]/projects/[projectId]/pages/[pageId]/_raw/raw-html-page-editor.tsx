@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import type { Page, PageContent } from "@/types/database";
-import { Button, Eyebrow, Hairline, StatusBadge } from "@/lib/ds";
+import { Button, Eyebrow, StatusBadge } from "@/lib/ds";
 import { AutosaveField, type AutosaveResult } from "../autosave-input";
 import {
   deletePage,

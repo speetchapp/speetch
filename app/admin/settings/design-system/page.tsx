@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { Field, Kbd, KbdCombo, Sceau, Snippet } from "@/lib/ds";
+import { Field, Kbd, KbdCombo, Snippet } from "@/lib/ds";
 
 export const metadata: Metadata = {
   title: "Design System",
