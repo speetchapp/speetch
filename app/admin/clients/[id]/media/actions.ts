@@ -1,0 +1,500 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
+import type { MediaFolderRow, MediaRow } from "./_lib/types";
+
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const BUCKET = "page-media";
+const STORAGE_PREFIX = "clients";
+const MAX_NAME_LEN = 80;
+
+// Limites par type. On reste large mais on cap pour éviter qu'un upload
+// pète la requête (Hostinger / Supabase ont leur propre limite côté infra).
+const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20 MB
+const MAX_VIDEO_SIZE = 200 * 1024 * 1024; // 200 MB
+
+const ALLOWED_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "image/svg+xml",
+  "image/avif",
+]);
+
+const ALLOWED_VIDEO_TYPES = new Set([
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "video/x-matroska",
+]);
+
+async function requireOwnerAndAdmin() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return { ok: false as const, error: "Session expirée. Reconnecte-toi." };
+  }
+  const ownerEmail = process.env.SPEETCH_OWNER_EMAIL?.toLowerCase();
+  if (ownerEmail && user.email?.toLowerCase() !== ownerEmail) {
+    return { ok: false as const, error: "Accès réservé au propriétaire." };
+  }
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return {
+      ok: false as const,
+      error: "SUPABASE_SERVICE_ROLE_KEY manquant dans .env.local.",
+    };
+  }
+  return { ok: true as const, admin: createAdminClient() };
+}
+
+async function ensureProfileExists(
+  admin: ReturnType<typeof createAdminClient>,
+  profileId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("id, is_owner")
+    .eq("id", profileId)
+    .maybeSingle();
+  if (!profile) return { ok: false, error: "Client introuvable." };
+  if (profile.is_owner) {
+    return { ok: false, error: "Pas de médiathèque sur le profil owner." };
+  }
+  return { ok: true };
+}
+
+function normalizeName(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > MAX_NAME_LEN) return trimmed.slice(0, MAX_NAME_LEN);
+  return trimmed;
+}
+
+function cleanExt(filename: string, mime: string): string {
+  const extMatch = filename.toLowerCase().match(/\.([a-z0-9]+)$/);
+  if (extMatch) return extMatch[1];
+  if (mime === "image/svg+xml") return "svg";
+  if (mime === "image/jpeg") return "jpg";
+  return mime.split("/").pop() ?? "bin";
+}
+
+function cleanBaseName(filename: string): string {
+  const noExt = filename.replace(/\.[a-z0-9]+$/i, "");
+  return (
+    noExt
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60) || "media"
+  );
+}
+
+// ============================================================================
+// Folders CRUD
+// ============================================================================
+
+export type CreateMediaFolderResult =
+  | { ok: true; folderId: string }
+  | { ok: false; error: string };
+
+export async function createMediaFolder(input: {
+  profileId: string;
+  name: string;
+}): Promise<CreateMediaFolderResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  const name = normalizeName(input.name);
+  if (!name) return { ok: false, error: "Le nom du dossier est requis." };
+
+  const own = await ensureProfileExists(auth.admin, input.profileId);
+  if (!own.ok) return { ok: false, error: own.error };
+
+  const { data: maxRow } = await auth.admin
+    .from("client_media_folders" as never)
+    .select("position")
+    .eq("profile_id", input.profileId)
+    .order("position", { ascending: false })
+    .limit(1)
+    .maybeSingle<Pick<MediaFolderRow, "position">>();
+  const nextPosition = (maxRow?.position ?? -1) + 1;
+
+  const { data: inserted, error } = await auth.admin
+    .from("client_media_folders" as never)
+    .insert({
+      profile_id: input.profileId,
+      name,
+      position: nextPosition,
+    } as never)
+    .select("id")
+    .single<{ id: string }>();
+  if (error || !inserted) {
+    console.error("[createMediaFolder] insert error:", error);
+    return { ok: false, error: error?.message ?? "Création impossible." };
+  }
+  revalidatePath(`/admin/clients/${input.profileId}/media`);
+  return { ok: true, folderId: inserted.id };
+}
+
+export type RenameMediaFolderResult = { ok: true } | { ok: false; error: string };
+
+export async function renameMediaFolder(input: {
+  profileId: string;
+  folderId: string;
+  name: string;
+}): Promise<RenameMediaFolderResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.folderId)) {
+    return { ok: false, error: "Dossier invalide." };
+  }
+  const name = normalizeName(input.name);
+  if (!name) return { ok: false, error: "Le nom du dossier est requis." };
+
+  const { error } = await auth.admin
+    .from("client_media_folders" as never)
+    .update({ name } as never)
+    .eq("id", input.folderId)
+    .eq("profile_id", input.profileId);
+  if (error) {
+    console.error("[renameMediaFolder] update error:", error);
+    return { ok: false, error: error.message };
+  }
+  revalidatePath(`/admin/clients/${input.profileId}/media`);
+  return { ok: true };
+}
+
+export type DeleteMediaFolderResult = { ok: true } | { ok: false; error: string };
+
+export async function deleteMediaFolder(input: {
+  profileId: string;
+  folderId: string;
+}): Promise<DeleteMediaFolderResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.folderId)) {
+    return { ok: false, error: "Dossier invalide." };
+  }
+
+  // Le ON DELETE SET NULL côté FK ramène les médias en "Hors dossier"
+  // automatiquement — pas besoin de toucher au Storage.
+  const { error } = await auth.admin
+    .from("client_media_folders" as never)
+    .delete()
+    .eq("id", input.folderId)
+    .eq("profile_id", input.profileId);
+  if (error) {
+    console.error("[deleteMediaFolder] delete error:", error);
+    return { ok: false, error: error.message };
+  }
+  revalidatePath(`/admin/clients/${input.profileId}/media`);
+  return { ok: true };
+}
+
+export type ReorderMediaFoldersResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+export async function reorderMediaFolders(input: {
+  profileId: string;
+  folderIds: string[];
+}): Promise<ReorderMediaFoldersResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!Array.isArray(input.folderIds) || input.folderIds.length === 0) {
+    return { ok: false, error: "Liste vide." };
+  }
+  if (input.folderIds.length > 200) {
+    return { ok: false, error: "Trop de dossiers (max 200)." };
+  }
+  if (!input.folderIds.every((id) => UUID_REGEX.test(id))) {
+    return { ok: false, error: "Identifiant invalide." };
+  }
+  if (new Set(input.folderIds).size !== input.folderIds.length) {
+    return { ok: false, error: "Doublons dans la liste." };
+  }
+
+  for (let i = 0; i < input.folderIds.length; i++) {
+    const { error } = await auth.admin
+      .from("client_media_folders" as never)
+      .update({ position: i } as never)
+      .eq("id", input.folderIds[i])
+      .eq("profile_id", input.profileId);
+    if (error) {
+      console.error("[reorderMediaFolders] update error:", error);
+      return { ok: false, error: error.message };
+    }
+  }
+  revalidatePath(`/admin/clients/${input.profileId}/media`);
+  return { ok: true };
+}
+
+// ============================================================================
+// Media files
+// ============================================================================
+
+export type UploadClientMediaResult =
+  | { ok: true; mediaId: string; storagePath: string; publicUrl: string }
+  | { ok: false; error: string };
+
+/**
+ * Upload un fichier (image ou vidéo) dans le bucket page-media sous
+ * `clients/{profileId}/...` et insère la ligne correspondante en base.
+ * Le `folder_id` est optionnel (champ du form `folder_id`).
+ */
+export async function uploadClientMedia(
+  formData: FormData,
+): Promise<UploadClientMediaResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+
+  const profileId = String(formData.get("profile_id") ?? "").trim();
+  if (!UUID_REGEX.test(profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  const folderIdRaw = String(formData.get("folder_id") ?? "").trim();
+  const folderId =
+    folderIdRaw === "" || folderIdRaw === "null" ? null : folderIdRaw;
+  if (folderId !== null && !UUID_REGEX.test(folderId)) {
+    return { ok: false, error: "Dossier invalide." };
+  }
+
+  const own = await ensureProfileExists(auth.admin, profileId);
+  if (!own.ok) return { ok: false, error: own.error };
+
+  if (folderId !== null) {
+    const { data: folder } = await auth.admin
+      .from("client_media_folders" as never)
+      .select("id, profile_id")
+      .eq("id", folderId)
+      .maybeSingle<Pick<MediaFolderRow, "id" | "profile_id">>();
+    if (!folder || folder.profile_id !== profileId) {
+      return { ok: false, error: "Dossier introuvable pour ce client." };
+    }
+  }
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return { ok: false, error: "Aucun fichier reçu." };
+  }
+  const isImage = ALLOWED_IMAGE_TYPES.has(file.type);
+  const isVideo = ALLOWED_VIDEO_TYPES.has(file.type);
+  if (!isImage && !isVideo) {
+    return {
+      ok: false,
+      error: `Format non supporté (${file.type || "inconnu"}).`,
+    };
+  }
+  if (isImage && file.size > MAX_IMAGE_SIZE) {
+    return { ok: false, error: "Image trop volumineuse (max 20 MB)." };
+  }
+  if (isVideo && file.size > MAX_VIDEO_SIZE) {
+    return { ok: false, error: "Vidéo trop volumineuse (max 200 MB)." };
+  }
+
+  // Path : clients/{profileId}/{timestamp}-{slugified-name}.{ext}
+  const ext = cleanExt(file.name || "media", file.type);
+  const base = cleanBaseName(file.name || "media");
+  const storagePath = `${STORAGE_PREFIX}/${profileId}/${Date.now()}-${base}.${ext}`;
+
+  const arrayBuffer = await file.arrayBuffer();
+  const { error: uploadError } = await auth.admin.storage
+    .from(BUCKET)
+    .upload(storagePath, arrayBuffer, {
+      contentType: file.type,
+      upsert: false,
+    });
+  if (uploadError) {
+    console.error("[uploadClientMedia] upload error:", uploadError);
+    return { ok: false, error: uploadError.message };
+  }
+
+  // Position : on push à la fin de la "vue" (profile_id + folder_id)
+  const { data: maxRow } = await auth.admin
+    .from("client_media" as never)
+    .select("position")
+    .eq("profile_id", profileId)
+    .order("position", { ascending: false })
+    .limit(1)
+    .maybeSingle<Pick<MediaRow, "position">>();
+  const nextPosition = (maxRow?.position ?? -1) + 1;
+
+  const { data: inserted, error: insertError } = await auth.admin
+    .from("client_media" as never)
+    .insert({
+      profile_id: profileId,
+      folder_id: folderId,
+      filename: file.name || `media.${ext}`,
+      storage_path: storagePath,
+      mime_type: file.type,
+      size_bytes: file.size,
+      position: nextPosition,
+    } as never)
+    .select("id")
+    .single<{ id: string }>();
+
+  if (insertError || !inserted) {
+    // Rollback storage
+    await auth.admin.storage.from(BUCKET).remove([storagePath]);
+    console.error("[uploadClientMedia] insert error:", insertError);
+    return {
+      ok: false,
+      error: insertError?.message ?? "Erreur d'insertion en base.",
+    };
+  }
+
+  const { data: pub } = auth.admin.storage
+    .from(BUCKET)
+    .getPublicUrl(storagePath);
+
+  revalidatePath(`/admin/clients/${profileId}/media`);
+  return {
+    ok: true,
+    mediaId: inserted.id,
+    storagePath,
+    publicUrl: pub.publicUrl,
+  };
+}
+
+export type DeleteClientMediaResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+export async function deleteClientMedia(input: {
+  profileId: string;
+  mediaId: string;
+}): Promise<DeleteClientMediaResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.mediaId)) {
+    return { ok: false, error: "Média invalide." };
+  }
+
+  const { data: row } = await auth.admin
+    .from("client_media" as never)
+    .select("id, profile_id, storage_path")
+    .eq("id", input.mediaId)
+    .maybeSingle<Pick<MediaRow, "id" | "profile_id" | "storage_path">>();
+  if (!row || row.profile_id !== input.profileId) {
+    return { ok: false, error: "Média introuvable." };
+  }
+
+  const { error: removeError } = await auth.admin.storage
+    .from(BUCKET)
+    .remove([row.storage_path]);
+  if (removeError) {
+    console.error("[deleteClientMedia] storage error:", removeError);
+    // On continue quand même : on préfère un orphan storage qu'une ligne
+    // DB qui pointe sur un fichier disparu côté UI.
+  }
+
+  const { error } = await auth.admin
+    .from("client_media" as never)
+    .delete()
+    .eq("id", input.mediaId);
+  if (error) {
+    console.error("[deleteClientMedia] delete error:", error);
+    return { ok: false, error: error.message };
+  }
+  revalidatePath(`/admin/clients/${input.profileId}/media`);
+  return { ok: true };
+}
+
+export type MoveMediaToFolderResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+export async function moveMediaToFolder(input: {
+  profileId: string;
+  mediaId: string;
+  folderId: string | null;
+}): Promise<MoveMediaToFolderResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.mediaId)) {
+    return { ok: false, error: "Média invalide." };
+  }
+  if (input.folderId !== null && !UUID_REGEX.test(input.folderId)) {
+    return { ok: false, error: "Dossier invalide." };
+  }
+
+  if (input.folderId !== null) {
+    const { data: folder } = await auth.admin
+      .from("client_media_folders" as never)
+      .select("id, profile_id")
+      .eq("id", input.folderId)
+      .maybeSingle<Pick<MediaFolderRow, "id" | "profile_id">>();
+    if (!folder || folder.profile_id !== input.profileId) {
+      return { ok: false, error: "Dossier introuvable pour ce client." };
+    }
+  }
+
+  const { error } = await auth.admin
+    .from("client_media" as never)
+    .update({ folder_id: input.folderId } as never)
+    .eq("id", input.mediaId)
+    .eq("profile_id", input.profileId);
+  if (error) {
+    console.error("[moveMediaToFolder] update error:", error);
+    return { ok: false, error: error.message };
+  }
+  revalidatePath(`/admin/clients/${input.profileId}/media`);
+  return { ok: true };
+}
+
+export type RenameClientMediaResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+export async function renameClientMedia(input: {
+  profileId: string;
+  mediaId: string;
+  filename: string;
+}): Promise<RenameClientMediaResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.mediaId)) {
+    return { ok: false, error: "Média invalide." };
+  }
+  const filename = normalizeName(input.filename);
+  if (!filename) return { ok: false, error: "Nom requis." };
+
+  const { error } = await auth.admin
+    .from("client_media" as never)
+    .update({ filename } as never)
+    .eq("id", input.mediaId)
+    .eq("profile_id", input.profileId);
+  if (error) {
+    console.error("[renameClientMedia] update error:", error);
+    return { ok: false, error: error.message };
+  }
+  revalidatePath(`/admin/clients/${input.profileId}/media`);
+  return { ok: true };
+}
