@@ -17,6 +17,7 @@ type TargetKind = (typeof TARGET_KINDS)[number];
 
 const MAX_EXACT = 4000;
 const MAX_CONTEXT = 64;
+const MAX_COMMENT = 2000;
 
 export type Annotation = {
   id: string;
@@ -26,6 +27,7 @@ export type Annotation = {
   anchor_exact: string;
   anchor_prefix: string;
   anchor_suffix: string;
+  comment: string | null;
   created_at: string;
 };
 
@@ -38,8 +40,18 @@ type AnnotationRow = {
   anchor_exact: string;
   anchor_prefix: string;
   anchor_suffix: string;
+  comment: string | null;
   created_at: string;
 };
+
+function normalizeComment(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > MAX_COMMENT) return trimmed.slice(0, MAX_COMMENT);
+  return trimmed;
+}
 
 async function resolveProfileBySlug(
   slug: string,
@@ -102,7 +114,7 @@ export async function listAnnotationsForTarget(input: {
   const { data, error } = await admin
     .from("client_annotations" as never)
     .select(
-      "id, profile_id, target_kind, target_id, color, anchor_exact, anchor_prefix, anchor_suffix, created_at",
+      "id, profile_id, target_kind, target_id, color, anchor_exact, anchor_prefix, anchor_suffix, comment, created_at",
     )
     .eq("profile_id", auth.profileId)
     .eq("target_kind", targetKind)
@@ -123,6 +135,7 @@ export async function listAnnotationsForTarget(input: {
     anchor_exact: row.anchor_exact,
     anchor_prefix: row.anchor_prefix,
     anchor_suffix: row.anchor_suffix,
+    comment: row.comment,
     created_at: row.created_at,
   }));
 
@@ -141,6 +154,7 @@ export async function createAnnotation(input: {
   exact: string;
   prefix: string;
   suffix: string;
+  comment?: string | null;
 }): Promise<CreateAnnotationResult> {
   const auth = await requireUnlocked(input.clientSlug);
   if (!auth.ok) return { ok: false, error: auth.error };
@@ -193,6 +207,8 @@ export async function createAnnotation(input: {
     }
   }
 
+  const comment = normalizeComment(input.comment);
+
   const { data: inserted, error } = await admin
     .from("client_annotations" as never)
     .insert({
@@ -203,9 +219,10 @@ export async function createAnnotation(input: {
       anchor_exact: exact,
       anchor_prefix: prefix,
       anchor_suffix: suffix,
+      comment,
     } as never)
     .select(
-      "id, profile_id, target_kind, target_id, color, anchor_exact, anchor_prefix, anchor_suffix, created_at",
+      "id, profile_id, target_kind, target_id, color, anchor_exact, anchor_prefix, anchor_suffix, comment, created_at",
     )
     .single<AnnotationRow>();
 
@@ -224,9 +241,43 @@ export async function createAnnotation(input: {
       anchor_exact: inserted.anchor_exact,
       anchor_prefix: inserted.anchor_prefix,
       anchor_suffix: inserted.anchor_suffix,
+      comment: inserted.comment,
       created_at: inserted.created_at,
     },
   };
+}
+
+export type UpdateAnnotationCommentResult =
+  | { ok: true; comment: string | null }
+  | { ok: false; error: string };
+
+export async function updateAnnotationComment(input: {
+  clientSlug: string;
+  annotationId: string;
+  comment: string | null;
+}): Promise<UpdateAnnotationCommentResult> {
+  const auth = await requireUnlocked(input.clientSlug);
+  if (!auth.ok) return { ok: false, error: auth.error };
+
+  if (!UUID_REGEX.test(input.annotationId)) {
+    return { ok: false, error: "Annotation invalide." };
+  }
+
+  const comment = normalizeComment(input.comment);
+
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("client_annotations" as never)
+    .update({ comment } as never)
+    .eq("id", input.annotationId)
+    .eq("profile_id", auth.profileId);
+
+  if (error) {
+    console.error("[updateAnnotationComment] error:", error);
+    return { ok: false, error: error.message };
+  }
+
+  return { ok: true, comment };
 }
 
 export type DeleteAnnotationResult =

@@ -123,7 +123,7 @@ export default async function PublicPageRoute({ params }: Props) {
     const { data: annotationsData } = await supabase
       .from("client_annotations" as never)
       .select(
-        "id, color, anchor_exact, anchor_prefix, anchor_suffix, created_at",
+        "id, color, anchor_exact, anchor_prefix, anchor_suffix, comment, created_at",
       )
       .eq("profile_id", page.profile_id)
       .eq("target_kind", "page")
@@ -136,6 +136,7 @@ export default async function PublicPageRoute({ params }: Props) {
           anchor_exact: string;
           anchor_prefix: string;
           anchor_suffix: string;
+          comment: string | null;
           created_at: string;
         }>
       >();
@@ -160,6 +161,7 @@ export default async function PublicPageRoute({ params }: Props) {
           anchor_exact: a.anchor_exact,
           anchor_prefix: a.anchor_prefix,
           anchor_suffix: a.anchor_suffix,
+          comment: a.comment,
         }))}
       />
     );

@@ -11,6 +11,7 @@ import {
 import {
   createAnnotation,
   deleteAnnotation,
+  updateAnnotationComment,
 } from "@/app/clients/[slug]/annotation-actions";
 
 export type AnnotationColor = "yellow" | "green" | "pink" | "blue";
@@ -21,6 +22,7 @@ export type AnnotationData = {
   anchor_exact: string;
   anchor_prefix: string;
   anchor_suffix: string;
+  comment: string | null;
 };
 
 const COLOR_SWATCHES: Array<{ value: AnnotationColor; hex: string; label: string }> = [
@@ -29,6 +31,8 @@ const COLOR_SWATCHES: Array<{ value: AnnotationColor; hex: string; label: string
   { value: "pink", hex: "#fbcfe8", label: "Rose" },
   { value: "blue", hex: "#bfdbfe", label: "Bleu" },
 ];
+
+const MAX_COMMENT_LEN = 2000;
 
 type SelectionPopover = {
   kind: "select";
@@ -39,27 +43,23 @@ type SelectionPopover = {
   y: number;
 };
 
-type HighlightPopover = {
-  kind: "highlight";
-  id: string;
+type CommentPopover = {
+  kind: "comment";
+  annotationId: string;
+  initialValue: string;
   x: number;
   y: number;
 };
 
-type Popover = SelectionPopover | HighlightPopover | null;
+type HighlightPopover = {
+  kind: "highlight";
+  annotationId: string;
+  x: number;
+  y: number;
+};
 
-/**
- * Overlay React qui dialogue avec le script injecté dans l'iframe via
- * postMessage. Gère :
- *  - la sync initiale (envoie la liste au "ready")
- *  - les sélections (affiche le popover de palette à la position relative
- *    au viewport du parent)
- *  - les clics sur highlight existant (affiche un mini bouton « Retirer »)
- *
- * À placer en sibling de l'iframe — il occupe une couche fixed sur le
- * viewport (pas absolute sur le document) pour rester visible pendant un
- * scroll en cours d'interaction.
- */
+type Popover = SelectionPopover | CommentPopover | HighlightPopover | null;
+
 export function AnnotationsOverlay({
   clientSlug,
   targetKind,
@@ -92,12 +92,10 @@ export function AnnotationsOverlay({
     [iframeRef],
   );
 
-  // Resync à chaque changement de la liste
   useEffect(() => {
     sendApply(annotations);
   }, [annotations, sendApply]);
 
-  // Listener postMessage de l'iframe
   useEffect(() => {
     function onMessage(e: MessageEvent) {
       const data = e.data as
@@ -139,7 +137,7 @@ export function AnnotationsOverlay({
         if (!id) return;
         setPopover({
           kind: "highlight",
-          id,
+          annotationId: id,
           x: rect.left + x,
           y: rect.top + y,
         });
@@ -150,7 +148,6 @@ export function AnnotationsOverlay({
     return () => window.removeEventListener("message", onMessage);
   }, [iframeRef, sendApply]);
 
-  // Fermeture du popover sur Esc / clic hors popover
   useEffect(() => {
     if (!popover) return;
     function onKey(e: KeyboardEvent) {
@@ -187,9 +184,42 @@ export function AnnotationsOverlay({
         return;
       }
       setAnnotations((prev) => [...prev, res.annotation]);
-      setPopover(null);
+      // Enchaîne sur le popover de commentaire (optionnel)
+      setPopover({
+        kind: "comment",
+        annotationId: res.annotation.id,
+        initialValue: "",
+        x: popover.x,
+        y: popover.y,
+      });
     },
     [popover, busy, clientSlug, targetKind, targetId],
+  );
+
+  const onSaveComment = useCallback(
+    async (value: string) => {
+      if (popover?.kind !== "comment" || busy) return;
+      const trimmed = value.trim();
+      const next = trimmed.length === 0 ? null : trimmed;
+      setBusy(true);
+      const res = await updateAnnotationComment({
+        clientSlug,
+        annotationId: popover.annotationId,
+        comment: next,
+      });
+      setBusy(false);
+      if (!res.ok) {
+        console.error("[annotation comment] error:", res.error);
+        return;
+      }
+      setAnnotations((prev) =>
+        prev.map((a) =>
+          a.id === popover.annotationId ? { ...a, comment: res.comment } : a,
+        ),
+      );
+      setPopover(null);
+    },
+    [popover, busy, clientSlug],
   );
 
   const onRemove = useCallback(async () => {
@@ -197,22 +227,35 @@ export function AnnotationsOverlay({
     setBusy(true);
     const res = await deleteAnnotation({
       clientSlug,
-      annotationId: popover.id,
+      annotationId: popover.annotationId,
     });
     setBusy(false);
     if (!res.ok) {
       console.error("[annotation delete] error:", res.error);
       return;
     }
-    setAnnotations((prev) => prev.filter((a) => a.id !== popover.id));
+    setAnnotations((prev) => prev.filter((a) => a.id !== popover.annotationId));
     setPopover(null);
   }, [popover, busy, clientSlug]);
 
+  const onEditComment = useCallback(() => {
+    if (popover?.kind !== "highlight") return;
+    const annotation = annotations.find((a) => a.id === popover.annotationId);
+    if (!annotation) return;
+    setPopover({
+      kind: "comment",
+      annotationId: annotation.id,
+      initialValue: annotation.comment ?? "",
+      x: popover.x,
+      y: popover.y,
+    });
+  }, [popover, annotations]);
+
   const placement = useMemo(() => {
     if (!popover) return null;
-    // Décale légèrement en dessous du curseur, recale si proche du bord droit
     const PADDING = 12;
-    const width = popover.kind === "select" ? 200 : 110;
+    const width =
+      popover.kind === "select" ? 200 : popover.kind === "comment" ? 280 : 240;
     const viewportW = typeof window !== "undefined" ? window.innerWidth : 1280;
     const left = Math.min(popover.x + 8, viewportW - width - PADDING);
     const top = popover.y + 16;
@@ -220,6 +263,11 @@ export function AnnotationsOverlay({
   }, [popover]);
 
   if (!popover || !placement) return null;
+
+  const currentAnnotation =
+    popover.kind === "highlight"
+      ? annotations.find((a) => a.id === popover.annotationId)
+      : null;
 
   return (
     <div
@@ -234,7 +282,7 @@ export function AnnotationsOverlay({
       }}
       className="rounded-xl border border-white/10 bg-[#0a0a0a]/95 px-3 py-2 shadow-2xl backdrop-blur-md"
     >
-      {popover.kind === "select" ? (
+      {popover.kind === "select" && (
         <div className="flex items-center gap-2">
           {COLOR_SWATCHES.map((s) => (
             <button
@@ -256,17 +304,105 @@ export function AnnotationsOverlay({
             ×
           </button>
         </div>
-      ) : (
-        <button
-          type="button"
-          onClick={onRemove}
-          disabled={busy}
-          className="flex items-center gap-2 text-[11px] uppercase tracking-[0.32em] text-white/65 transition-colors hover:text-red-300/85 disabled:cursor-wait disabled:opacity-50"
-        >
-          <span className="inline-block h-px w-4 bg-current" />
-          {busy ? "…" : "Retirer"}
-        </button>
+      )}
+
+      {popover.kind === "comment" && (
+        <CommentForm
+          initialValue={popover.initialValue}
+          busy={busy}
+          onSave={onSaveComment}
+          onCancel={() => setPopover(null)}
+        />
+      )}
+
+      {popover.kind === "highlight" && (
+        <div className="flex flex-col gap-3 px-1 py-1">
+          {currentAnnotation?.comment ? (
+            <p className="whitespace-pre-wrap break-words font-serif text-sm italic text-white/75">
+              {currentAnnotation.comment}
+            </p>
+          ) : (
+            <p className="text-[11px] uppercase tracking-[0.28em] text-white/35">
+              Aucun commentaire
+            </p>
+          )}
+          <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2">
+            <button
+              type="button"
+              onClick={onEditComment}
+              disabled={busy}
+              className="text-[11px] uppercase tracking-[0.32em] text-white/55 transition-colors hover:text-white disabled:cursor-wait"
+            >
+              {currentAnnotation?.comment ? "Éditer" : "Ajouter"}
+            </button>
+            <button
+              type="button"
+              onClick={onRemove}
+              disabled={busy}
+              className="text-[11px] uppercase tracking-[0.32em] text-white/40 transition-colors hover:text-red-300/85 disabled:cursor-wait"
+            >
+              {busy ? "…" : "Retirer"}
+            </button>
+          </div>
+        </div>
       )}
     </div>
+  );
+}
+
+function CommentForm({
+  initialValue,
+  busy,
+  onSave,
+  onCancel,
+}: {
+  initialValue: string;
+  busy: boolean;
+  onSave: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave(value);
+      }}
+      className="flex flex-col gap-2"
+    >
+      <textarea
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        rows={3}
+        maxLength={MAX_COMMENT_LEN}
+        placeholder="Ton commentaire (optionnel)"
+        disabled={busy}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            onSave(value);
+          }
+        }}
+        className="resize-none rounded-md border border-white/10 bg-white/[0.04] px-2 py-1.5 text-sm text-white/85 placeholder:text-white/30 focus:border-white/30 focus:outline-none"
+      />
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="text-[10px] uppercase tracking-[0.32em] text-white/40 transition-colors hover:text-white disabled:cursor-wait"
+        >
+          Plus tard
+        </button>
+        <button
+          type="submit"
+          disabled={busy}
+          className="text-[11px] uppercase tracking-[0.32em] text-white/75 transition-colors hover:text-white disabled:cursor-wait disabled:opacity-50"
+        >
+          {busy ? "…" : value.trim() ? "Enregistrer" : "Aucun commentaire"}
+        </button>
+      </div>
+    </form>
   );
 }
