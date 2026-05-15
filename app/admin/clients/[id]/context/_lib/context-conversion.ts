@@ -58,7 +58,11 @@ export async function convertDocxToHtml(
   buffer: ArrayBuffer,
   fallbackTitle: string,
 ): Promise<{ html: string; extractedTitle: string | null }> {
-  const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
+  // Mammoth en Node n'accepte que { path } ou { buffer: Node Buffer }
+  // (les types TS proposent aussi arrayBuffer mais c'est strictement
+  // côté navigateur). On convertit donc en Buffer côté serveur.
+  const nodeBuffer = Buffer.from(buffer);
+  const result = await mammoth.convertToHtml({ buffer: nodeBuffer });
   const body = result.value;
   const extractedTitle = extractFirstH1Text(body);
   const finalTitle = extractedTitle ?? fallbackTitle;
