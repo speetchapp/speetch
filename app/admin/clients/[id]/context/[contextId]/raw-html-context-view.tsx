@@ -17,6 +17,14 @@ import {
 import { SPEETCH_OVERLAY_CSS } from "@/lib/speetch-overlay-css";
 import { SpeetchStyleButton } from "../_components/speetch-style-button";
 import { AddBlockPanel } from "./add-block-panel";
+import { ChartModal } from "./chart-modal";
+import {
+  CHART_FIGURE_ATTR,
+  buildChartFigureHtml,
+  parseChartFigure,
+  parseTableElement,
+  type ChartConfig,
+} from "../_lib/chart";
 
 /**
  * Viewer iframe sandbox pour les notes de contexte en mode "reproduction
@@ -56,8 +64,21 @@ export function RawHtmlContextView({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [height, setHeight] = useState<number>(0);
 
-  type EditMode = "none" | "hide" | "text";
+  type EditMode = "none" | "hide" | "text" | "chart";
   const [editMode, setEditMode] = useState<EditMode>("none");
+
+  // Cible courante du mode chart : un <table> existant pour créer un
+  // graphique, OU un <figure data-speetch-chart> existant pour éditer.
+  // Le ref direct n'est pas safe (peut être détaché après update du
+  // raw_html) — on stocke un sélecteur CSS pour retrouver l'élément
+  // après save + iframe reload.
+  const [chartTarget, setChartTarget] = useState<{
+    kind: "table" | "chart";
+    selector: string;
+    tableHeaders: string[];
+    tableRows: string[][];
+    initialConfig: ChartConfig | null;
+  } | null>(null);
 
   const [hiddenElements, setHiddenElements] = useState<string[]>(
     initialHiddenElements,
@@ -324,6 +345,209 @@ export function RawHtmlContextView({
     };
   }, [editMode, textOverrides]);
 
+  // Mode "chart" : click sur un tableau (création) ou un graphique
+  // existant (édition) pour ouvrir la modal de config.
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    const iframeDoc = iframe.contentDocument;
+    if (!iframeDoc || !iframeDoc.body) return;
+    const doc: Document = iframeDoc;
+    const docBody: HTMLElement = iframeDoc.body;
+
+    if (editMode !== "chart") {
+      cleanupChartOverlays(doc);
+      return;
+    }
+
+    const styleEl = doc.createElement("style");
+    styleEl.id = "__speetch-chart-style";
+    styleEl.textContent = CHART_STYLE_CSS;
+    doc.head.appendChild(styleEl);
+
+    function findTargetForEvent(e: MouseEvent): HTMLElement | null {
+      const path = e.composedPath() as EventTarget[];
+      for (const node of path) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (node === docBody || node === doc.documentElement) return null;
+        if (node.tagName === "TABLE") return node;
+        if (node.hasAttribute(CHART_FIGURE_ATTR)) return node;
+      }
+      return null;
+    }
+
+    const onMouseOver = (e: MouseEvent) => {
+      const target = findTargetForEvent(e);
+      doc.querySelectorAll(".__speetch-chart-hover").forEach((el) =>
+        el.classList.remove("__speetch-chart-hover"),
+      );
+      if (target) target.classList.add("__speetch-chart-hover");
+    };
+
+    const onMouseOut = () => {
+      doc.querySelectorAll(".__speetch-chart-hover").forEach((el) =>
+        el.classList.remove("__speetch-chart-hover"),
+      );
+    };
+
+    const onClick = (e: MouseEvent) => {
+      const target = findTargetForEvent(e);
+      if (!target) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const selector = getCssPath(target);
+      if (!selector) return;
+
+      if (target.tagName === "TABLE") {
+        const tbl = target as HTMLTableElement;
+        const parsed = parseTableElement(tbl);
+        if (!parsed) {
+          setError("Tableau vide — rien à transformer.");
+          return;
+        }
+        setChartTarget({
+          kind: "table",
+          selector,
+          tableHeaders: parsed.headers,
+          tableRows: parsed.rows,
+          initialConfig: null,
+        });
+      } else {
+        // chart existant
+        const cfg = parseChartFigure(target);
+        if (!cfg) {
+          setError("Impossible de relire la configuration du graphique.");
+          return;
+        }
+        // On essaie de retrouver la table source juste avant le figure
+        // pour proposer les bonnes colonnes ; sinon on tombe en mode
+        // édition sans table (juste type / titre / orientation).
+        let tableForEdit: HTMLTableElement | null = null;
+        let tableHeaders: string[] = [];
+        let tableRows: string[][] = [];
+        let walker: Element | null = target.previousElementSibling;
+        while (walker) {
+          if (walker.tagName === "TABLE") {
+            tableForEdit = walker as HTMLTableElement;
+            break;
+          }
+          walker = walker.previousElementSibling;
+        }
+        if (tableForEdit) {
+          const parsed = parseTableElement(tableForEdit);
+          if (parsed) {
+            tableHeaders = parsed.headers;
+            tableRows = parsed.rows;
+          }
+        }
+        setChartTarget({
+          kind: "chart",
+          selector,
+          tableHeaders,
+          tableRows,
+          initialConfig: cfg,
+        });
+      }
+    };
+
+    docBody.addEventListener("mouseover", onMouseOver, true);
+    docBody.addEventListener("mouseout", onMouseOut, true);
+    docBody.addEventListener("click", onClick, true);
+
+    return () => {
+      try {
+        docBody.removeEventListener("mouseover", onMouseOver, true);
+        docBody.removeEventListener("mouseout", onMouseOut, true);
+        docBody.removeEventListener("click", onClick, true);
+      } catch {
+        /* iframe detached */
+      }
+      cleanupChartOverlays(doc);
+    };
+  }, [editMode]);
+
+  // -------- Actions chart --------
+
+  function onCancelChart() {
+    setChartTarget(null);
+  }
+
+  function onConfirmChart(config: ChartConfig) {
+    const target = chartTarget;
+    if (!target) return;
+    const iframe = iframeRef.current;
+    const doc = iframe?.contentDocument;
+    if (!doc) {
+      setError("Iframe non disponible — recharge la page et réessaie.");
+      return;
+    }
+
+    cleanupChartOverlays(doc);
+    cleanupHideOverlays(doc);
+    cleanupTextOverlays(doc);
+    doc.querySelectorAll("style[data-speetch-hide]").forEach((el) => el.remove());
+    doc.querySelectorAll("style[data-speetch-overlay]").forEach((el) =>
+      el.remove(),
+    );
+    doc.querySelectorAll("script[data-speetch-overrides]").forEach((el) =>
+      el.remove(),
+    );
+
+    let domTarget: Element | null = null;
+    try {
+      domTarget = doc.querySelector(target.selector);
+    } catch {
+      domTarget = null;
+    }
+    if (!domTarget) {
+      setError(
+        "Cible introuvable dans le document — peut-être modifiée entre temps. Recharge la page.",
+      );
+      return;
+    }
+
+    const figureHtml = buildChartFigureHtml(config);
+    // On crée un nœud à partir du HTML pour pouvoir l'insérer proprement.
+    const wrapper = doc.createElement("div");
+    wrapper.innerHTML = figureHtml;
+    const newFigure = wrapper.firstElementChild;
+    if (!newFigure) {
+      setError("Erreur de génération du graphique.");
+      return;
+    }
+
+    if (target.kind === "table") {
+      // Insère juste après la table source
+      domTarget.insertAdjacentElement("afterend", newFigure);
+    } else {
+      // Remplace le chart existant
+      domTarget.replaceWith(newFigure);
+    }
+
+    const doctype = doc.doctype
+      ? `<!DOCTYPE ${doc.doctype.name}>\n`
+      : "<!DOCTYPE html>\n";
+    const newHtml = doctype + doc.documentElement.outerHTML;
+
+    setChartTarget(null);
+    setError(null);
+    startTransition(async () => {
+      const result = await updateContextRawHtml({
+        profileId,
+        contextId,
+        rawHtml: newHtml,
+        hiddenElements,
+      });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      flashSaved();
+      router.refresh();
+    });
+  }
+
   // -------- Actions hide --------
 
   function onSaveHideClick() {
@@ -549,6 +773,8 @@ export function RawHtmlContextView({
               "Clique sur un bloc dans la page pour le masquer / le réafficher"}
             {editMode === "text" &&
               "Clique sur un texte dans la page pour le modifier"}
+            {editMode === "chart" &&
+              "Clique sur un tableau pour le transformer en graphique — ou sur un graphique existant pour le modifier"}
             {editMode === "none" &&
               "Choisis un mode pour modifier le rendu de la note"}
           </span>
@@ -688,7 +914,9 @@ export function RawHtmlContextView({
             ? "border-red-400/40"
             : editMode === "text"
               ? "border-amber-300/40"
-              : "border-white/10"
+              : editMode === "chart"
+                ? "border-sky-400/40"
+                : "border-white/10"
         }`}
       >
         <iframe
@@ -874,6 +1102,17 @@ export function RawHtmlContextView({
         description={error}
         onClose={() => setError(null)}
       />
+
+      {chartTarget && (
+        <ChartModal
+          open={true}
+          initialConfig={chartTarget.initialConfig}
+          initialTableHeaders={chartTarget.tableHeaders}
+          initialTableRows={chartTarget.tableRows}
+          onCancel={onCancelChart}
+          onConfirm={onConfirmChart}
+        />
+      )}
     </div>
   );
 }
@@ -884,16 +1123,17 @@ function ModeToggle({
   current,
   onChange,
 }: {
-  current: "none" | "hide" | "text";
-  onChange: (next: "none" | "hide" | "text") => void;
+  current: "none" | "hide" | "text" | "chart";
+  onChange: (next: "none" | "hide" | "text" | "chart") => void;
 }) {
   const buttons: Array<{
-    value: "none" | "hide" | "text";
+    value: "none" | "hide" | "text" | "chart";
     label: string;
   }> = [
     { value: "none", label: "Visualisation" },
     { value: "hide", label: "Masquer" },
     { value: "text", label: "Édition texte" },
+    { value: "chart", label: "Graphiques" },
   ];
   return (
     <div className="inline-flex items-center gap-px overflow-hidden rounded-full border border-white/10 bg-white/[0.04]">
@@ -1207,6 +1447,15 @@ const TEXT_STYLE_CSS = `
 }
 `;
 
+const CHART_STYLE_CSS = `
+.__speetch-chart-hover {
+  outline: 2px solid rgba(56, 189, 248, 0.9) !important;
+  outline-offset: 2px !important;
+  cursor: pointer !important;
+  background: rgba(56, 189, 248, 0.06) !important;
+}
+`;
+
 function cleanupHideOverlays(doc: Document) {
   try {
     doc.querySelectorAll(".__speetch-hide-hover").forEach((el) =>
@@ -1224,6 +1473,17 @@ function cleanupTextOverlays(doc: Document) {
       el.classList.remove("__speetch-text-hover"),
     );
     doc.querySelector("#__speetch-text-style")?.remove();
+  } catch {
+    /* ignore */
+  }
+}
+
+function cleanupChartOverlays(doc: Document) {
+  try {
+    doc.querySelectorAll(".__speetch-chart-hover").forEach((el) =>
+      el.classList.remove("__speetch-chart-hover"),
+    );
+    doc.querySelector("#__speetch-chart-style")?.remove();
   } catch {
     /* ignore */
   }

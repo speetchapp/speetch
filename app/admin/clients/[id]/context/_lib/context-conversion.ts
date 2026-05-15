@@ -22,6 +22,7 @@ export const MAX_HTML_SIZE = 2 * 1024 * 1024; // 2 MB
 export const MAX_MARKDOWN_SIZE = 2 * 1024 * 1024; // 2 MB
 export const MAX_DOCX_SIZE = 8 * 1024 * 1024; // 8 MB (binaire, plus volumineux)
 export const MAX_PDF_SIZE = 12 * 1024 * 1024; // 12 MB
+export const MAX_XLSX_SIZE = 10 * 1024 * 1024; // 10 MB
 export const URL_FETCH_TIMEOUT_MS = 15_000;
 export const URL_MAX_BYTES = MAX_HTML_SIZE;
 
@@ -747,6 +748,129 @@ export async function convertPdfToHtml(
 <body>
 <h1>${safeTitle}</h1>
 ${pageBlocks.join("\n")}
+</body>
+</html>`;
+
+  return { html, extractedTitle };
+}
+
+/**
+ * Convertit un .xlsx (ArrayBuffer) en HTML autonome stylé Speetch via
+ * SheetJS. Chaque feuille devient une `<section>` avec son nom en
+ * heading et son contenu rendu en `<table>` HTML.
+ *
+ * Le titre est repris des Properties.Title du workbook si présent.
+ */
+export async function convertXlsxToHtml(
+  buffer: ArrayBuffer,
+  fallbackTitle: string,
+): Promise<{ html: string; extractedTitle: string | null }> {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.read(new Uint8Array(buffer), { type: "array" });
+
+  // Titre depuis les Properties du workbook si présent
+  let extractedTitle: string | null = null;
+  const props = wb.Props as { Title?: string } | undefined;
+  if (props?.Title) {
+    const trimmed = props.Title.trim();
+    if (trimmed.length >= 2) extractedTitle = trimmed;
+  }
+
+  const sheetBlocks: string[] = [];
+  for (const name of wb.SheetNames) {
+    const sheet = wb.Sheets[name];
+    if (!sheet) continue;
+    // sheet_to_html renvoie un document HTML complet — on extrait juste
+    // le `<table>...</table>` pour le réinsérer dans notre shell stylé.
+    const rawHtml = XLSX.utils.sheet_to_html(sheet, {
+      id: `sheet-${name.replace(/[^a-z0-9_-]/gi, "-")}`,
+      editable: false,
+    });
+    const tableMatch = rawHtml.match(/<table[\s\S]*<\/table>/i);
+    const tableHtml = tableMatch ? tableMatch[0] : rawHtml;
+    const safeName = name
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    sheetBlocks.push(
+      `<section class="xlsx-sheet">
+  <h2 class="xlsx-sheet-name">${safeName}</h2>
+  <div class="xlsx-table-wrap">${tableHtml}</div>
+</section>`,
+    );
+  }
+
+  const finalTitle = extractedTitle ?? fallbackTitle;
+  const safeTitle = finalTitle
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  const html = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>${safeTitle}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 5rem 1.75rem 6rem;
+    color: #1a1a1a;
+    line-height: 1.5;
+    background: #fafaf7;
+    font-size: 14px;
+  }
+  h1 {
+    font-weight: 200;
+    font-size: clamp(2rem, 5vw, 3rem);
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    margin: 0 0 2.5rem;
+    color: #111;
+  }
+  .xlsx-sheet { margin: 0 0 3.5rem; }
+  .xlsx-sheet-name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.7rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.32em;
+    color: #555;
+    margin: 0 0 1rem;
+  }
+  .xlsx-table-wrap {
+    overflow-x: auto;
+    border: 1px solid #e5e0d8;
+    border-radius: 4px;
+    background: #fff;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.85rem;
+  }
+  td, th {
+    border-right: 1px solid #eee;
+    border-bottom: 1px solid #eee;
+    padding: 0.4rem 0.6rem;
+    text-align: left;
+    vertical-align: top;
+    white-space: nowrap;
+    color: #1a1a1a;
+  }
+  td:last-child, th:last-child { border-right: 0; }
+  tr:last-child td { border-bottom: 0; }
+  tr:nth-child(even) td { background: #fafaf7; }
+  th { background: #f0eee8; font-weight: 500; }
+</style>
+</head>
+<body>
+<h1>${safeTitle}</h1>
+${sheetBlocks.join("\n")}
 </body>
 </html>`;
 

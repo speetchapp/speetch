@@ -10,7 +10,14 @@ import { createClientContext, type CreateContextState } from "../actions";
 const EASE_OUT_EXPO: [number, number, number, number] = [0.22, 1, 0.36, 1];
 const INITIAL_STATE: CreateContextState = { status: "idle" };
 
-type SourceKind = "upload" | "markdown" | "docx" | "pdf" | "url" | "empty";
+type SourceKind =
+  | "upload"
+  | "markdown"
+  | "docx"
+  | "pdf"
+  | "xlsx"
+  | "url"
+  | "empty";
 type Mode = "analyze" | "raw";
 
 function SubmitButton({
@@ -30,19 +37,22 @@ function SubmitButton({
           ? "Importer le document Word"
           : sourceKind === "pdf"
             ? "Importer le PDF"
-            : mode === "raw"
-              ? sourceKind === "url"
-                ? "Récupérer & enregistrer"
-                : "Enregistrer en l'état"
-              : sourceKind === "url"
-                ? "Récupérer & analyser"
-                : "Analyser & enregistrer";
+            : sourceKind === "xlsx"
+              ? "Importer le tableur"
+              : mode === "raw"
+                ? sourceKind === "url"
+                  ? "Récupérer & enregistrer"
+                  : "Enregistrer en l'état"
+                : sourceKind === "url"
+                  ? "Récupérer & analyser"
+                  : "Analyser & enregistrer";
   const busy =
     sourceKind === "empty"
       ? "Création…"
       : sourceKind === "markdown" ||
           sourceKind === "docx" ||
-          sourceKind === "pdf"
+          sourceKind === "pdf" ||
+          sourceKind === "xlsx"
         ? "Conversion…"
         : mode === "raw"
           ? "Enregistrement…"
@@ -171,6 +181,13 @@ const SOURCE_OPTIONS: Array<{
     tagline: ".pdf, brief, contrat, étude…",
     description:
       "Upload un fichier .pdf. Extraction du texte page par page via pdf.js — idéal pour des briefs / études. Les PDF scannés (sans texte) ne fonctionnent pas.",
+  },
+  {
+    value: "xlsx",
+    label: "Tableur Excel",
+    tagline: ".xlsx, planning, budget, copy deck…",
+    description:
+      "Upload un fichier .xlsx. Chaque feuille devient une section avec un tableau HTML stylé Speetch. Idéal pour copy decks, plannings, budgets.",
   },
   {
     value: "url",
@@ -306,8 +323,8 @@ export function NewContextForm({
             </span>
           </h1>
           <p className="max-w-lg font-serif text-base italic text-white/45 md:text-lg">
-            Upload un fichier HTML, Markdown, Word ou PDF, colle une URL —
-            Claude analyse ou Speetch convertit en note de contexte stylée.
+            Upload un fichier HTML, Markdown, Word, PDF ou Excel, colle une
+            URL — Claude analyse ou Speetch convertit en note stylée.
           </p>
         </motion.div>
 
@@ -326,7 +343,8 @@ export function NewContextForm({
           {sourceKind !== "empty" &&
             sourceKind !== "markdown" &&
             sourceKind !== "docx" &&
-            sourceKind !== "pdf" && (
+            sourceKind !== "pdf" &&
+            sourceKind !== "xlsx" && (
               <ModeField mode={mode} onChange={setMode} />
             )}
 
@@ -381,6 +399,18 @@ export function NewContextForm({
             </Field>
           )}
 
+          {sourceKind === "xlsx" && (
+            <Field label="Tableur Excel" hint="max 10 MB · .xlsx, .xlsm">
+              <input
+                type="file"
+                name="file"
+                required
+                accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroenabled.12"
+                className="block w-full text-sm text-white/70 file:mr-4 file:rounded-md file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-[11px] file:uppercase file:tracking-[0.32em] file:text-white/80 hover:file:bg-white/20"
+              />
+            </Field>
+          )}
+
           {sourceKind === "url" && (
             <Field label="URL de la page" hint="https://… uniquement">
               <input
@@ -401,7 +431,8 @@ export function NewContextForm({
                 ? "requis"
                 : sourceKind === "markdown" ||
                     sourceKind === "docx" ||
-                    sourceKind === "pdf"
+                    sourceKind === "pdf" ||
+                    sourceKind === "xlsx"
                   ? "optionnel — repris du document ou du nom de fichier si vide"
                   : "optionnel — Claude propose si vide"
             }
@@ -444,9 +475,11 @@ export function NewContextForm({
                   ? "Le document Word est converti en HTML stylé Speetch via Mammoth — aucun appel Claude. Images embarquées préservées."
                   : sourceKind === "pdf"
                     ? "Le PDF est lu page par page via pdf.js — texte extrait dans l'ordre de lecture, séparé en sections de page. Aucun appel Claude."
-                    : mode === "raw"
-                      ? "Le HTML est stocké et rendu tel quel — aucun appel Claude. Quasi instantané."
-                      : "L'analyse Claude prend en général 10-30 secondes. Reste sur la page pendant la conversion."}
+                    : sourceKind === "xlsx"
+                      ? "Le tableur est converti via SheetJS — une section par feuille, tableaux HTML stylés Speetch. Aucun appel Claude."
+                      : mode === "raw"
+                        ? "Le HTML est stocké et rendu tel quel — aucun appel Claude. Quasi instantané."
+                        : "L'analyse Claude prend en général 10-30 secondes. Reste sur la page pendant la conversion."}
           </p>
 
           <div className="flex items-center justify-between border-t border-white/10 pt-6">
