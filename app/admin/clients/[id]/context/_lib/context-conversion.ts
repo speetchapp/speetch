@@ -21,6 +21,7 @@ import type { PageContent } from "@/types/database";
 export const MAX_HTML_SIZE = 2 * 1024 * 1024; // 2 MB
 export const MAX_MARKDOWN_SIZE = 2 * 1024 * 1024; // 2 MB
 export const MAX_DOCX_SIZE = 8 * 1024 * 1024; // 8 MB (binaire, plus volumineux)
+export const MAX_PDF_SIZE = 12 * 1024 * 1024; // 12 MB
 export const URL_FETCH_TIMEOUT_MS = 15_000;
 export const URL_MAX_BYTES = MAX_HTML_SIZE;
 
@@ -568,4 +569,182 @@ export async function fetchHtmlFromUrl(url: string): Promise<FetchHtmlResult> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Convertit un .pdf (ArrayBuffer) en HTML autonome stylé Speetch via
+ * pdfjs-dist (build legacy pour Node, pas de worker nécessaire).
+ *
+ * Stratégie d'extraction :
+ *  - une page PDF = une section HTML (séparateur visuel)
+ *  - dans une page, les items text sont regroupés en paragraphes en
+ *    détectant les sauts de ligne via la position Y (transform[5])
+ *  - le titre est repris des métadonnées PDF (info.Title) si présent
+ *
+ * Le rendu n'est pas WYSIWYG (pas de mise en page absolue) mais le
+ * texte est récupéré dans l'ordre de lecture, ce qui suffit pour une
+ * note de contexte interne.
+ */
+export async function convertPdfToHtml(
+  buffer: ArrayBuffer,
+  fallbackTitle: string,
+): Promise<{ html: string; extractedTitle: string | null }> {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(buffer),
+    // Pas de worker côté Node : le build legacy fait tout dans le thread
+    // principal. Désactiver explicitement évite un warning.
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    useSystemFonts: true,
+  });
+  const doc = await loadingTask.promise;
+
+  // Titre depuis les métadonnées PDF si disponible
+  let metaTitle: string | null = null;
+  try {
+    const meta = await doc.getMetadata();
+    const info = meta.info as { Title?: string };
+    if (info?.Title) {
+      const trimmed = info.Title.trim();
+      if (trimmed.length >= 2) metaTitle = trimmed;
+    }
+  } catch {
+    // métadonnées absentes ou illisibles — on ignore
+  }
+
+  const pageBlocks: string[] = [];
+
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const content = await page.getTextContent();
+
+    // Reconstruit les paragraphes en regardant les sauts de ligne :
+    // un saut Y > 4pt entre deux items = nouveau paragraphe.
+    const paragraphs: string[] = [];
+    let current = "";
+    let lastY: number | null = null;
+    for (const item of content.items) {
+      if (!("str" in item)) continue;
+      const it = item as { str: string; transform: number[] };
+      const y = it.transform[5];
+      const str = it.str;
+      if (lastY !== null) {
+        const dy = Math.abs(y - lastY);
+        if (dy > 4) {
+          // nouvelle ligne / nouveau paragraphe
+          if (current.trim().length > 0) {
+            paragraphs.push(current.trim());
+          }
+          current = "";
+        } else if (current.length > 0 && !current.endsWith(" ")) {
+          current += " ";
+        }
+      }
+      current += str;
+      lastY = y;
+    }
+    if (current.trim().length > 0) {
+      paragraphs.push(current.trim());
+    }
+
+    const paragraphsHtml = paragraphs
+      .map(
+        (p) =>
+          `<p>${p
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")}</p>`,
+      )
+      .join("\n");
+
+    pageBlocks.push(
+      `<section class="pdf-page" data-page="${i}">
+  <p class="pdf-page-label">Page ${i} / ${doc.numPages}</p>
+  ${paragraphsHtml}
+</section>`,
+    );
+  }
+
+  await doc.destroy();
+
+  // Si aucun titre des métadonnées, essaie de prendre la première ligne
+  // non vide du premier paragraphe (souvent c'est le titre du document).
+  let extractedTitle: string | null = metaTitle;
+  if (!extractedTitle && pageBlocks.length > 0) {
+    const firstParaMatch = pageBlocks[0].match(/<p>(?!<)(.+?)<\/p>/);
+    if (firstParaMatch) {
+      const candidate = firstParaMatch[1]
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .trim();
+      if (candidate.length >= 2 && candidate.length <= 120) {
+        extractedTitle = candidate;
+      }
+    }
+  }
+
+  const finalTitle = extractedTitle ?? fallbackTitle;
+  const safeTitle = finalTitle
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  const html = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>${safeTitle}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 5rem 1.75rem 6rem;
+    color: #1a1a1a;
+    line-height: 1.7;
+    background: #fafaf7;
+    font-size: 16px;
+  }
+  h1 {
+    font-weight: 200;
+    font-size: clamp(2rem, 5vw, 3rem);
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    margin: 0 0 2rem;
+    color: #111;
+  }
+  .pdf-page {
+    margin: 0 0 3.5rem;
+    padding-bottom: 2rem;
+    border-bottom: 1px solid #e5e0d8;
+  }
+  .pdf-page:last-of-type {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+  .pdf-page-label {
+    margin: 0 0 1.25rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.32em;
+    color: #999;
+  }
+  p { margin: 0 0 1rem; }
+  p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<h1>${safeTitle}</h1>
+${pageBlocks.join("\n")}
+</body>
+</html>`;
+
+  return { html, extractedTitle };
 }

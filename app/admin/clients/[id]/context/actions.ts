@@ -10,9 +10,11 @@ import {
   MAX_DOCX_SIZE,
   MAX_HTML_SIZE,
   MAX_MARKDOWN_SIZE,
+  MAX_PDF_SIZE,
   convertDocxToHtml,
   convertHtmlToContext,
   convertMarkdownToHtml,
+  convertPdfToHtml,
   extractMarkdownTitle,
   fetchHtmlFromUrl,
 } from "./_lib/context-conversion";
@@ -225,11 +227,13 @@ export async function createClientContext(
     sourceKindRaw !== "url" &&
     sourceKindRaw !== "empty" &&
     sourceKindRaw !== "markdown" &&
-    sourceKindRaw !== "docx"
+    sourceKindRaw !== "docx" &&
+    sourceKindRaw !== "pdf"
   ) {
     return {
       status: "error",
-      error: "Source invalide (upload, markdown, docx, url ou empty attendu).",
+      error:
+        "Source invalide (upload, markdown, docx, pdf, url ou empty attendu).",
     };
   }
   const uiSourceKind = sourceKindRaw as
@@ -237,18 +241,20 @@ export async function createClientContext(
     | "url"
     | "empty"
     | "markdown"
-    | "docx";
+    | "docx"
+    | "pdf";
 
   const modeRaw = String(formData.get("mode") ?? "analyze").trim();
   if (modeRaw !== "analyze" && modeRaw !== "raw") {
     return { status: "error", error: "Mode invalide (analyze ou raw attendu)." };
   }
-  // Markdown, docx et empty forcent "raw" : rien à analyser via Claude
+  // Markdown, docx, pdf et empty forcent "raw" : rien à analyser via Claude
   // (déjà structuré côté source) ou rien à analyser (note vide).
   const mode =
     uiSourceKind === "empty" ||
     uiSourceKind === "markdown" ||
-    uiSourceKind === "docx"
+    uiSourceKind === "docx" ||
+    uiSourceKind === "pdf"
       ? "raw"
       : (modeRaw as "analyze" | "raw");
 
@@ -348,6 +354,41 @@ export async function createClientContext(
           "Impossible de convertir ce fichier Word. Vérifie qu'il s'agit bien d'un .docx valide.",
       };
     }
+  } else if (uiSourceKind === "pdf") {
+    const file = formData.get("file");
+    if (!(file instanceof File) || file.size === 0) {
+      return { status: "error", error: "Aucun fichier PDF reçu." };
+    }
+    if (file.size > MAX_PDF_SIZE) {
+      return {
+        status: "error",
+        error: "Fichier PDF trop volumineux (max 12 MB).",
+      };
+    }
+    sourceFilename = file.name || null;
+    const filenameTitle = sourceFilename
+      ? sourceFilename.replace(/\.pdf$/i, "").trim() || null
+      : null;
+    const fallbackTitle =
+      overrideTitle.length >= 2
+        ? overrideTitle
+        : (filenameTitle ?? "Note PDF");
+    try {
+      const buffer = await file.arrayBuffer();
+      const result = await convertPdfToHtml(buffer, fallbackTitle);
+      preResolvedTitle =
+        overrideTitle.length >= 2
+          ? overrideTitle
+          : (result.extractedTitle ?? filenameTitle ?? "Note PDF");
+      html = result.html;
+    } catch (err) {
+      console.error("[createClientContext] pdf conversion error:", err);
+      return {
+        status: "error",
+        error:
+          "Impossible de convertir ce fichier PDF. Vérifie qu'il s'agit bien d'un PDF lisible (non scanné).",
+      };
+    }
   } else if (uiSourceKind === "url") {
     const url = String(formData.get("url") ?? "").trim();
     if (!url) {
@@ -440,10 +481,12 @@ export async function createClientContext(
 
   // Le CHECK constraint en base n'accepte que upload/url/empty. Un import
   // .md est aussi un upload (avec un filename qui le distingue).
-  // Le CHECK constraint en base n'accepte que upload/url/empty. Markdown et
-  // docx sont des sous-cas d'upload (le filename .md/.docx les distingue).
+  // Le CHECK constraint en base n'accepte que upload/url/empty. Markdown,
+  // docx et pdf sont des sous-cas d'upload (le filename les distingue).
   const dbSourceKind: "upload" | "url" | "empty" =
-    uiSourceKind === "markdown" || uiSourceKind === "docx"
+    uiSourceKind === "markdown" ||
+    uiSourceKind === "docx" ||
+    uiSourceKind === "pdf"
       ? "upload"
       : uiSourceKind;
 
