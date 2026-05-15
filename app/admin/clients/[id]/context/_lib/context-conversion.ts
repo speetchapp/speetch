@@ -14,11 +14,148 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { marked } from "marked";
 import type { PageContent } from "@/types/database";
 
 export const MAX_HTML_SIZE = 2 * 1024 * 1024; // 2 MB
+export const MAX_MARKDOWN_SIZE = 2 * 1024 * 1024; // 2 MB
 export const URL_FETCH_TIMEOUT_MS = 15_000;
 export const URL_MAX_BYTES = MAX_HTML_SIZE;
+
+/**
+ * Extrait le premier titre H1 d'un texte markdown (`# Mon titre`).
+ * Renvoie null si absent ou trop court.
+ */
+export function extractMarkdownTitle(md: string): string | null {
+  const match = md.match(/^[ \t]*#[ \t]+(.+?)\s*$/m);
+  if (!match) return null;
+  const title = match[1]
+    .replace(/[*_`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return title.length >= 2 ? title : null;
+}
+
+/**
+ * Convertit un texte Markdown en document HTML autonome stylé Speetch.
+ *
+ * Le résultat est destiné à être rendu dans l'iframe sandbox du viewer
+ * raw_html — pas besoin de sanitization (admin-only + sandbox). Le titre
+ * fourni est injecté dans <title> et utilisé comme fallback si le markdown
+ * n'a pas de H1.
+ */
+export function convertMarkdownToHtml(md: string, title: string): string {
+  const body = marked.parse(md, {
+    gfm: true,
+    breaks: false,
+    async: false,
+  }) as string;
+
+  const safeTitle = title
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>${safeTitle}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 5rem 1.75rem 6rem;
+    color: #1a1a1a;
+    line-height: 1.7;
+    background: #fafaf7;
+    font-size: 16px;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 200;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+    margin: 2.5rem 0 1rem;
+    color: #111;
+  }
+  h1 {
+    font-size: clamp(2rem, 5vw, 3rem);
+    letter-spacing: -0.02em;
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+  }
+  h2 { font-size: 1.75rem; }
+  h3 { font-size: 1.4rem; }
+  h4 { font-size: 1.15rem; font-weight: 400; }
+  h5, h6 { font-size: 1rem; font-weight: 500; }
+  p { margin: 0 0 1rem; }
+  a { color: #1a1a1a; text-decoration: underline; text-underline-offset: 3px; }
+  a:hover { color: #555; }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.5rem; }
+  li { margin: 0.25rem 0; }
+  ul ul, ol ol, ul ol, ol ul { margin: 0.25rem 0; }
+  blockquote {
+    margin: 1.5rem 0;
+    padding: 0.5rem 0 0.5rem 1.25rem;
+    border-left: 2px solid #ccc;
+    color: #555;
+    font-style: italic;
+    font-family: ui-serif, Georgia, serif;
+  }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.9em;
+    background: rgba(0, 0, 0, 0.06);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+  }
+  pre {
+    background: #1a1a1a;
+    color: #f5f5f0;
+    padding: 1rem 1.25rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    margin: 1.5rem 0;
+  }
+  pre code {
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+  }
+  hr { border: 0; border-top: 1px solid #ddd; margin: 2.5rem 0; }
+  img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    margin: 1.5rem 0;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1.5rem 0;
+    font-size: 0.95rem;
+  }
+  th, td {
+    border-bottom: 1px solid #ddd;
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { font-weight: 500; background: rgba(0,0,0,0.025); }
+</style>
+</head>
+<body>
+${body}
+</body>
+</html>`;
+}
 
 const SYSTEM_PROMPT = `Tu convertis une page HTML (artifact Claude, page web, brief interne, etc.) en JSON pour Speetch — agence créative à Paris.
 

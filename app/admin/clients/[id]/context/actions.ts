@@ -8,7 +8,10 @@ import { ensureUniqueSlug, slugify } from "@/lib/slug";
 import type { PageContent } from "@/types/database";
 import {
   MAX_HTML_SIZE,
+  MAX_MARKDOWN_SIZE,
   convertHtmlToContext,
+  convertMarkdownToHtml,
+  extractMarkdownTitle,
   fetchHtmlFromUrl,
 } from "./_lib/context-conversion";
 import type {
@@ -218,22 +221,30 @@ export async function createClientContext(
   if (
     sourceKindRaw !== "upload" &&
     sourceKindRaw !== "url" &&
-    sourceKindRaw !== "empty"
+    sourceKindRaw !== "empty" &&
+    sourceKindRaw !== "markdown"
   ) {
     return {
       status: "error",
-      error: "Source invalide (upload, url ou empty attendu).",
+      error: "Source invalide (upload, markdown, url ou empty attendu).",
     };
   }
-  const sourceKind = sourceKindRaw as "upload" | "url" | "empty";
+  const uiSourceKind = sourceKindRaw as
+    | "upload"
+    | "url"
+    | "empty"
+    | "markdown";
 
   const modeRaw = String(formData.get("mode") ?? "analyze").trim();
   if (modeRaw !== "analyze" && modeRaw !== "raw") {
     return { status: "error", error: "Mode invalide (analyze ou raw attendu)." };
   }
-  // En mode "empty" on force "raw" (rien à analyser)
+  // Markdown et empty forcent "raw" : rien à analyser via Claude,
+  // le markdown est déjà structuré et converti en HTML stylé localement.
   const mode =
-    sourceKind === "empty" ? "raw" : (modeRaw as "analyze" | "raw");
+    uiSourceKind === "empty" || uiSourceKind === "markdown"
+      ? "raw"
+      : (modeRaw as "analyze" | "raw");
 
   if (mode === "analyze" && !process.env.ANTHROPIC_API_KEY) {
     return {
@@ -248,8 +259,11 @@ export async function createClientContext(
   let html: string;
   let sourceUrl: string | null = null;
   let sourceFilename: string | null = null;
+  // Titre déjà résolu en amont (markdown : extrait du H1 / nom de fichier).
+  // Quand non-null, court-circuite l'extraction depuis <title> en mode raw.
+  let preResolvedTitle: string | null = null;
 
-  if (sourceKind === "upload") {
+  if (uiSourceKind === "upload") {
     const file = formData.get("file");
     if (!(file instanceof File) || file.size === 0) {
       return { status: "error", error: "Aucun fichier HTML reçu." };
@@ -265,7 +279,35 @@ export async function createClientContext(
     if (html.trim().length < 20) {
       return { status: "error", error: "HTML trop court pour être exploité." };
     }
-  } else if (sourceKind === "url") {
+  } else if (uiSourceKind === "markdown") {
+    const file = formData.get("file");
+    if (!(file instanceof File) || file.size === 0) {
+      return { status: "error", error: "Aucun fichier Markdown reçu." };
+    }
+    if (file.size > MAX_MARKDOWN_SIZE) {
+      return {
+        status: "error",
+        error: "Fichier Markdown trop volumineux (max 2 MB).",
+      };
+    }
+    const mdText = await file.text();
+    if (mdText.trim().length < 5) {
+      return {
+        status: "error",
+        error: "Markdown trop court pour être exploité.",
+      };
+    }
+    sourceFilename = file.name || null;
+    const mdTitle = extractMarkdownTitle(mdText);
+    const filenameTitle = sourceFilename
+      ? sourceFilename.replace(/\.(md|markdown|mdx)$/i, "").trim() || null
+      : null;
+    preResolvedTitle =
+      overrideTitle.length >= 2
+        ? overrideTitle
+        : (mdTitle ?? filenameTitle ?? "Note Markdown");
+    html = convertMarkdownToHtml(mdText, preResolvedTitle);
+  } else if (uiSourceKind === "url") {
     const url = String(formData.get("url") ?? "").trim();
     if (!url) {
       return { status: "error", error: "URL manquante." };
@@ -280,7 +322,7 @@ export async function createClientContext(
       return { status: "error", error: "HTML trop court pour être exploité." };
     }
   } else {
-    // sourceKind === "empty"
+    // uiSourceKind === "empty"
     if (overrideTitle.length < 2) {
       return {
         status: "error",
@@ -312,7 +354,8 @@ export async function createClientContext(
 
   if (mode === "raw") {
     // Reproduction fidèle — pas de Claude, HTML brut stocké tel quel.
-    const htmlTitle = extractHtmlTitle(html);
+    // Pour markdown, le titre a déjà été résolu (extraction H1 + fallback).
+    const htmlTitle = preResolvedTitle ?? extractHtmlTitle(html);
     finalTitle =
       overrideTitle.length >= 2
         ? overrideTitle
@@ -354,13 +397,18 @@ export async function createClientContext(
     return !!data;
   });
 
+  // Le CHECK constraint en base n'accepte que upload/url/empty. Un import
+  // .md est aussi un upload (avec un filename qui le distingue).
+  const dbSourceKind: "upload" | "url" | "empty" =
+    uiSourceKind === "markdown" ? "upload" : uiSourceKind;
+
   const insertPayload: ClientContextInsert = {
     profile_id: profileId,
     title: finalTitle,
     slug,
     summary,
     content: content as unknown as ClientContextInsert["content"],
-    source_kind: sourceKind,
+    source_kind: dbSourceKind,
     source_url: sourceUrl,
     source_filename: sourceFilename,
   };

@@ -10,7 +10,7 @@ import { createClientContext, type CreateContextState } from "../actions";
 const EASE_OUT_EXPO: [number, number, number, number] = [0.22, 1, 0.36, 1];
 const INITIAL_STATE: CreateContextState = { status: "idle" };
 
-type SourceKind = "upload" | "url" | "empty";
+type SourceKind = "upload" | "markdown" | "url" | "empty";
 type Mode = "analyze" | "raw";
 
 function SubmitButton({
@@ -24,19 +24,23 @@ function SubmitButton({
   const idle =
     sourceKind === "empty"
       ? "Créer la note vide"
-      : mode === "raw"
-        ? sourceKind === "url"
-          ? "Récupérer & enregistrer"
-          : "Enregistrer en l'état"
-        : sourceKind === "url"
-          ? "Récupérer & analyser"
-          : "Analyser & enregistrer";
+      : sourceKind === "markdown"
+        ? "Importer le Markdown"
+        : mode === "raw"
+          ? sourceKind === "url"
+            ? "Récupérer & enregistrer"
+            : "Enregistrer en l'état"
+          : sourceKind === "url"
+            ? "Récupérer & analyser"
+            : "Analyser & enregistrer";
   const busy =
     sourceKind === "empty"
       ? "Création…"
-      : mode === "raw"
-        ? "Enregistrement…"
-        : "Analyse en cours…";
+      : sourceKind === "markdown"
+        ? "Conversion…"
+        : mode === "raw"
+          ? "Enregistrement…"
+          : "Analyse en cours…";
   return (
     <button
       type="submit"
@@ -142,6 +146,13 @@ const SOURCE_OPTIONS: Array<{
       "Upload un fichier .html depuis ton disque. Idéal pour les artifacts Claude téléchargés ou les pages sauvegardées.",
   },
   {
+    value: "markdown",
+    label: "Fichier Markdown",
+    tagline: "Note .md, README, doc technique…",
+    description:
+      "Upload un fichier .md depuis ton disque. Conversion en HTML stylé Speetch — titres, listes, code, citations préservés.",
+  },
+  {
     value: "url",
     label: "URL distante",
     tagline: "Page web publique",
@@ -172,7 +183,7 @@ function SourceField({
 
       <input type="hidden" name="source_kind" value={sourceKind} />
 
-      <div className="grid grid-cols-1 gap-px overflow-hidden rounded-2xl bg-white/[0.08] md:grid-cols-3">
+      <div className="grid grid-cols-1 gap-px overflow-hidden rounded-2xl bg-white/[0.08] md:grid-cols-2">
         {SOURCE_OPTIONS.map((opt) => {
           const active = opt.value === sourceKind;
           return (
@@ -275,8 +286,8 @@ export function NewContextForm({
             </span>
           </h1>
           <p className="max-w-lg font-serif text-base italic text-white/45 md:text-lg">
-            Upload un fichier HTML ou colle une URL — Claude analyse le contenu
-            et le restructure en note de contexte stylée Speetch.
+            Upload un fichier HTML ou Markdown, colle une URL — Claude analyse
+            le contenu et le restructure en note de contexte stylée Speetch.
           </p>
         </motion.div>
 
@@ -292,7 +303,7 @@ export function NewContextForm({
 
           <SourceField sourceKind={sourceKind} onChange={setSourceKind} />
 
-          {sourceKind !== "empty" && (
+          {sourceKind !== "empty" && sourceKind !== "markdown" && (
             <ModeField mode={mode} onChange={setMode} />
           )}
 
@@ -303,6 +314,18 @@ export function NewContextForm({
                 name="file"
                 required
                 accept=".html,.htm,text/html"
+                className="block w-full text-sm text-white/70 file:mr-4 file:rounded-md file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-[11px] file:uppercase file:tracking-[0.32em] file:text-white/80 hover:file:bg-white/20"
+              />
+            </Field>
+          )}
+
+          {sourceKind === "markdown" && (
+            <Field label="Fichier Markdown" hint="max 2 MB · .md, .markdown">
+              <input
+                type="file"
+                name="file"
+                required
+                accept=".md,.markdown,.mdx,text/markdown,text/x-markdown"
                 className="block w-full text-sm text-white/70 file:mr-4 file:rounded-md file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-[11px] file:uppercase file:tracking-[0.32em] file:text-white/80 hover:file:bg-white/20"
               />
             </Field>
@@ -326,7 +349,9 @@ export function NewContextForm({
             hint={
               sourceKind === "empty"
                 ? "requis"
-                : "optionnel — Claude propose si vide"
+                : sourceKind === "markdown"
+                  ? "optionnel — repris du H1 ou du nom de fichier si vide"
+                  : "optionnel — Claude propose si vide"
             }
           >
             <input
@@ -361,9 +386,11 @@ export function NewContextForm({
           <p className="text-[10px] uppercase tracking-[0.32em] text-white/30">
             {sourceKind === "empty"
               ? "Une note vierge est créée. Tu pourras remplir le HTML depuis la note."
-              : mode === "raw"
-                ? "Le HTML est stocké et rendu tel quel — aucun appel Claude. Quasi instantané."
-                : "L'analyse Claude prend en général 10-30 secondes. Reste sur la page pendant la conversion."}
+              : sourceKind === "markdown"
+                ? "Le Markdown est converti en HTML stylé Speetch — aucun appel Claude. Quasi instantané."
+                : mode === "raw"
+                  ? "Le HTML est stocké et rendu tel quel — aucun appel Claude. Quasi instantané."
+                  : "L'analyse Claude prend en général 10-30 secondes. Reste sur la page pendant la conversion."}
           </p>
 
           <div className="flex items-center justify-between border-t border-white/10 pt-6">
