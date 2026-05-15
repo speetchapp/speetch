@@ -731,7 +731,7 @@ export async function setContextPublishing(input: {
   const { data: ctx, error: fetchError } = await auth.admin
     .from("client_contexts" as never)
     .select(
-      "id, profile_id, title, slug, content, project_id, published_page_id",
+      "id, profile_id, title, slug, content, project_id, published_page_id, lot_id",
     )
     .eq("id", input.contextId)
     .maybeSingle<
@@ -744,6 +744,7 @@ export async function setContextPublishing(input: {
         | "content"
         | "project_id"
         | "published_page_id"
+        | "lot_id"
       >
     >();
 
@@ -800,6 +801,22 @@ export async function setContextPublishing(input: {
       return !!data;
     });
 
+    // Si la note est déjà rangée dans un lot du projet de destination, on
+    // transmet le lot_id à la page snapshot pour que la vue publique
+    // (client_spaces) puisse grouper directement. Si le lot vient d'un autre
+    // projet, on laisse null — le rattachement n'a plus de sens.
+    let snapshotLotId: string | null = null;
+    if (ctx.lot_id) {
+      const { data: lot } = await auth.admin
+        .from("project_lots" as never)
+        .select("id, project_id")
+        .eq("id", ctx.lot_id)
+        .maybeSingle<{ id: string; project_id: string }>();
+      if (lot && lot.project_id === input.projectId) {
+        snapshotLotId = ctx.lot_id;
+      }
+    }
+
     const { data: createdPage, error: insertError } = await auth.admin
       .from("pages")
       .insert({
@@ -809,7 +826,8 @@ export async function setContextPublishing(input: {
         template_id: CUSTOM_TEMPLATE_ID,
         content: ctx.content as PageContent,
         is_published: true,
-      })
+        lot_id: snapshotLotId,
+      } as never)
       .select("id")
       .single<{ id: string }>();
 
@@ -823,14 +841,20 @@ export async function setContextPublishing(input: {
     newPageId = createdPage.id;
   }
 
-  // 4. Update la note : project_id + published_page_id
+  // 4. Update la note : project_id + published_page_id (+ lot_id si le
+  // projet change, pour éviter une référence morte vers un lot d'un autre
+  // projet).
   const finalProjectId = input.projectId;
+  const updatePayload: Record<string, unknown> = {
+    project_id: finalProjectId,
+    published_page_id: newPageId,
+  };
+  if (ctx.project_id !== finalProjectId) {
+    updatePayload.lot_id = null;
+  }
   const { error: updateError } = await auth.admin
     .from("client_contexts" as never)
-    .update({
-      project_id: finalProjectId,
-      published_page_id: newPageId,
-    } as never)
+    .update(updatePayload as never)
     .eq("id", input.contextId);
 
   if (updateError) {

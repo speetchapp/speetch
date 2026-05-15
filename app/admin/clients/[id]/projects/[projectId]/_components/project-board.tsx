@@ -18,7 +18,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import Link from "next/link";
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 import { Button, Chip, ConfirmDialog, Hairline, StatusBadge } from "@/lib/ds";
 import {
   CUSTOM_TEMPLATE_ID,
@@ -29,9 +29,8 @@ import {
   createProjectLot,
   deleteProjectLot,
   renameProjectLot,
-  reorderProjectContexts,
+  reorderLotItems,
   reorderProjectLots,
-  reorderProjectPages,
   setContextLot,
   setPageLot,
 } from "../actions";
@@ -68,6 +67,13 @@ export type BoardNote = {
   created_at: string;
   lot_id: string | null;
 };
+
+// Union pour les items affichés dans la liste d'un lot (pages + notes
+// mélangées). On garde la donnée originale par référence pour ne pas
+// dupliquer ; le kind permet de router vers le bon row component.
+type LotItem =
+  | { kind: "page"; data: BoardPage }
+  | { kind: "note"; data: BoardNote };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,30 +128,37 @@ export function ProjectBoard({
     }),
   );
 
-  // Order utility : (lot.position, item.position) pour rendre le board en
-  // sections cohérentes. Les items orphelins (lot_id null) sont en fin.
-  const lotIndex = useMemo(() => {
-    const map = new Map<string, number>();
-    lots.forEach((l, i) => map.set(l.id, i));
-    return map;
-  }, [lots]);
-
-  function buildDisplayOrderedPages(pagesIn: BoardPage[]): BoardPage[] {
-    return [...pagesIn].sort((a, b) => {
-      const ai = a.lot_id ? (lotIndex.get(a.lot_id) ?? Infinity) : Infinity;
-      const bi = b.lot_id ? (lotIndex.get(b.lot_id) ?? Infinity) : Infinity;
-      if (ai !== bi) return ai - bi;
-      return a.position - b.position;
+  // Construit la liste unifiée d'un lot (ou null = "Hors lot") : pages et
+  // notes mélangées, triées par leur `position` (ce compteur est désormais
+  // partagé entre pages et notes après chaque drag — cf. action serveur
+  // reorderLotItems).
+  function buildLotItems(lotId: string | null): LotItem[] {
+    const items: LotItem[] = [];
+    for (const p of pages) {
+      if ((p.lot_id ?? null) === lotId) {
+        items.push({ kind: "page", data: p });
+      }
+    }
+    for (const n of notes) {
+      if ((n.lot_id ?? null) === lotId) {
+        items.push({ kind: "note", data: n });
+      }
+    }
+    items.sort((a, b) => {
+      const ap = a.data.position;
+      const bp = b.data.position;
+      if (ap !== bp) return ap - bp;
+      // Tiebreaker : ordre stable pages d'abord pour limiter les sauts
+      // visuels quand deux items partagent la même position (cas des
+      // données pré-feature où chaque table avait son propre compteur).
+      if (a.kind !== b.kind) return a.kind === "page" ? -1 : 1;
+      return 0;
     });
+    return items;
   }
 
-  function buildDisplayOrderedNotes(notesIn: BoardNote[]): BoardNote[] {
-    return [...notesIn].sort((a, b) => {
-      const ai = a.lot_id ? (lotIndex.get(a.lot_id) ?? Infinity) : Infinity;
-      const bi = b.lot_id ? (lotIndex.get(b.lot_id) ?? Infinity) : Infinity;
-      if (ai !== bi) return ai - bi;
-      return a.position - b.position;
-    });
+  function dndKey(item: LotItem): string {
+    return `${item.kind}:${item.data.id}`;
   }
 
   // ---- Drag handlers ----
@@ -173,112 +186,52 @@ export function ProjectBoard({
     });
   }
 
-  function handlePagesDragEndForLot(
+  function handleLotItemsDragEnd(
     lotId: string | null,
     event: DragEndEvent,
   ) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const sectionPages = pages
-      .filter((p) => (p.lot_id ?? null) === lotId)
-      .sort((a, b) => a.position - b.position);
-    const oldIndex = sectionPages.findIndex((p) => p.id === active.id);
-    const newIndex = sectionPages.findIndex((p) => p.id === over.id);
+    const sectionItems = buildLotItems(lotId);
+    const oldIndex = sectionItems.findIndex((it) => dndKey(it) === active.id);
+    const newIndex = sectionItems.findIndex((it) => dndKey(it) === over.id);
     if (oldIndex < 0 || newIndex < 0) return;
-    const reorderedSection = arrayMove(sectionPages, oldIndex, newIndex);
+    const reordered = arrayMove(sectionItems, oldIndex, newIndex);
 
-    // Reconstruit la liste globale dans l'ordre d'affichage : lots dans
-    // leur ordre, puis pour chaque lot ses pages (avec la nouvelle perm
-    // pour le lot affecté), puis les pages orphelines.
-    const buckets = new Map<string | null, BoardPage[]>();
-    for (const lot of lots) buckets.set(lot.id, []);
-    buckets.set(null, []);
-    for (const p of pages) {
-      const key = p.lot_id ?? null;
-      if (key === lotId) continue;
-      const arr = buckets.get(key);
-      if (arr) arr.push(p);
-    }
-    buckets.set(lotId, reorderedSection);
-
-    const globalOrdered: BoardPage[] = [];
-    for (const lot of lots) {
-      const arr = buckets.get(lot.id) ?? [];
-      arr.sort((a, b) => a.position - b.position);
-      globalOrdered.push(...arr);
-    }
-    const orphans = (buckets.get(null) ?? []).sort(
-      (a, b) => a.position - b.position,
-    );
-    globalOrdered.push(...orphans);
-
-    // Renumérote la position localement
-    const renumbered = globalOrdered.map((p, i) => ({ ...p, position: i }));
-    const previous = pages;
-    setPages(renumbered);
-    setError(null);
-    startTransition(async () => {
-      const res = await reorderProjectPages({
-        profileId,
-        projectId,
-        pageIds: renumbered.map((p) => p.id),
-      });
-      if (!res.ok) {
-        setError(res.error);
-        setPages(previous);
-      }
+    // Renumérote les positions au sein du lot : compteur partagé entre
+    // pages et notes pour que le tri par position dans la vue produise
+    // bien l'ordre désiré.
+    const previousPages = pages;
+    const previousNotes = notes;
+    const newPages = pages.map((p) => {
+      if ((p.lot_id ?? null) !== lotId) return p;
+      const idx = reordered.findIndex(
+        (it) => it.kind === "page" && it.data.id === p.id,
+      );
+      return idx >= 0 ? { ...p, position: idx } : p;
     });
-  }
-
-  function handleNotesDragEndForLot(
-    lotId: string | null,
-    event: DragEndEvent,
-  ) {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const sectionNotes = notes
-      .filter((n) => (n.lot_id ?? null) === lotId)
-      .sort((a, b) => a.position - b.position);
-    const oldIndex = sectionNotes.findIndex((n) => n.id === active.id);
-    const newIndex = sectionNotes.findIndex((n) => n.id === over.id);
-    if (oldIndex < 0 || newIndex < 0) return;
-    const reorderedSection = arrayMove(sectionNotes, oldIndex, newIndex);
-
-    const buckets = new Map<string | null, BoardNote[]>();
-    for (const lot of lots) buckets.set(lot.id, []);
-    buckets.set(null, []);
-    for (const n of notes) {
-      const key = n.lot_id ?? null;
-      if (key === lotId) continue;
-      const arr = buckets.get(key);
-      if (arr) arr.push(n);
-    }
-    buckets.set(lotId, reorderedSection);
-
-    const globalOrdered: BoardNote[] = [];
-    for (const lot of lots) {
-      const arr = buckets.get(lot.id) ?? [];
-      arr.sort((a, b) => a.position - b.position);
-      globalOrdered.push(...arr);
-    }
-    const orphans = (buckets.get(null) ?? []).sort(
-      (a, b) => a.position - b.position,
-    );
-    globalOrdered.push(...orphans);
-
-    const renumbered = globalOrdered.map((n, i) => ({ ...n, position: i }));
-    const previous = notes;
-    setNotes(renumbered);
+    const newNotes = notes.map((n) => {
+      if ((n.lot_id ?? null) !== lotId) return n;
+      const idx = reordered.findIndex(
+        (it) => it.kind === "note" && it.data.id === n.id,
+      );
+      return idx >= 0 ? { ...n, position: idx } : n;
+    });
+    setPages(newPages);
+    setNotes(newNotes);
     setError(null);
+
     startTransition(async () => {
-      const res = await reorderProjectContexts({
+      const res = await reorderLotItems({
         profileId,
         projectId,
-        contextIds: renumbered.map((n) => n.id),
+        lotId,
+        items: reordered.map((it) => ({ kind: it.kind, id: it.data.id })),
       });
       if (!res.ok) {
         setError(res.error);
-        setNotes(previous);
+        setPages(previousPages);
+        setNotes(previousNotes);
       }
     });
   }
@@ -377,9 +330,6 @@ export function ProjectBoard({
 
   // ---- Rendering ----
 
-  const orderedPages = buildDisplayOrderedPages(pages);
-  const orderedNotes = buildDisplayOrderedNotes(notes);
-
   return (
     <div className="flex flex-col gap-10">
       {error && (
@@ -404,16 +354,14 @@ export function ProjectBoard({
                 lot={lot}
                 index={index}
                 lots={lots}
-                pages={orderedPages.filter((p) => p.lot_id === lot.id)}
-                notes={orderedNotes.filter((n) => n.lot_id === lot.id)}
+                items={buildLotItems(lot.id)}
                 profileId={profileId}
                 projectId={projectId}
                 dbTemplateLabels={dbTemplateLabels}
                 sensors={sensors}
                 onRename={handleRenameLot}
                 onDelete={handleDeleteLot}
-                onPagesDragEnd={(event) => handlePagesDragEndForLot(lot.id, event)}
-                onNotesDragEnd={(event) => handleNotesDragEndForLot(lot.id, event)}
+                onItemsDragEnd={(event) => handleLotItemsDragEnd(lot.id, event)}
                 onPageLotChange={handlePageLotChange}
                 onNoteLotChange={handleNoteLotChange}
               />
@@ -424,14 +372,12 @@ export function ProjectBoard({
 
       <OrphanSection
         lots={lots}
-        pages={orderedPages.filter((p) => p.lot_id === null)}
-        notes={orderedNotes.filter((n) => n.lot_id === null)}
+        items={buildLotItems(null)}
         profileId={profileId}
         projectId={projectId}
         dbTemplateLabels={dbTemplateLabels}
         sensors={sensors}
-        onPagesDragEnd={(event) => handlePagesDragEndForLot(null, event)}
-        onNotesDragEnd={(event) => handleNotesDragEndForLot(null, event)}
+        onItemsDragEnd={(event) => handleLotItemsDragEnd(null, event)}
         onPageLotChange={handlePageLotChange}
         onNoteLotChange={handleNoteLotChange}
       />
@@ -449,32 +395,28 @@ function SortableLotSection({
   lot,
   index,
   lots,
-  pages,
-  notes,
+  items,
   profileId,
   projectId,
   dbTemplateLabels,
   sensors,
   onRename,
   onDelete,
-  onPagesDragEnd,
-  onNotesDragEnd,
+  onItemsDragEnd,
   onPageLotChange,
   onNoteLotChange,
 }: {
   lot: BoardLot;
   index: number;
   lots: BoardLot[];
-  pages: BoardPage[];
-  notes: BoardNote[];
+  items: LotItem[];
   profileId: string;
   projectId: string;
   dbTemplateLabels: Record<string, string>;
   sensors: ReturnType<typeof useSensors>;
   onRename: (lotId: string, name: string | null) => void;
   onDelete: (lotId: string) => void;
-  onPagesDragEnd: (event: DragEndEvent) => void;
-  onNotesDragEnd: (event: DragEndEvent) => void;
+  onItemsDragEnd: (event: DragEndEvent) => void;
   onPageLotChange: (pageId: string, lotId: string | null) => void;
   onNoteLotChange: (noteId: string, lotId: string | null) => void;
 }) {
@@ -587,53 +529,18 @@ function SortableLotSection({
         </div>
       </header>
 
-      <div className="flex flex-col gap-6 pl-8">
-        <ItemList
-          kind="pages"
-          items={pages.map((p) => ({
-            id: p.id,
-            lot_id: p.lot_id,
-            render: (sortable) => (
-              <SortablePageRow
-                key={p.id}
-                page={p}
-                lots={lots}
-                profileId={profileId}
-                projectId={projectId}
-                dbTemplateLabel={dbTemplateLabels[p.template_id]}
-                onLotChange={onPageLotChange}
-                sortable={sortable}
-              />
-            ),
-          }))}
+      <div className="flex flex-col gap-2 pl-8">
+        <UnifiedItemList
+          items={items}
+          lots={lots}
+          profileId={profileId}
+          projectId={projectId}
+          dbTemplateLabels={dbTemplateLabels}
           sensors={sensors}
-          onDragEnd={onPagesDragEnd}
-          emptyLabel={notes.length === 0 ? "Aucun élément dans ce lot." : null}
-        />
-
-        {notes.length > 0 && pages.length > 0 && (
-          <div className="h-px bg-white/5" />
-        )}
-
-        <ItemList
-          kind="notes"
-          items={notes.map((n) => ({
-            id: n.id,
-            lot_id: n.lot_id,
-            render: (sortable) => (
-              <SortableNoteRow
-                key={n.id}
-                note={n}
-                lots={lots}
-                profileId={profileId}
-                onLotChange={onNoteLotChange}
-                sortable={sortable}
-              />
-            ),
-          }))}
-          sensors={sensors}
-          onDragEnd={onNotesDragEnd}
-          emptyLabel={null}
+          onDragEnd={onItemsDragEnd}
+          onPageLotChange={onPageLotChange}
+          onNoteLotChange={onNoteLotChange}
+          emptyLabel="Aucun élément dans ce lot."
         />
       </div>
 
@@ -642,11 +549,11 @@ function SortableLotSection({
         tone="danger"
         title={`Supprimer ${label} ?`}
         description={
-          pages.length + notes.length > 0
-            ? `Les ${pages.length + notes.length} élément${
-                pages.length + notes.length > 1 ? "s" : ""
+          items.length > 0
+            ? `Les ${items.length} élément${
+                items.length > 1 ? "s" : ""
               } rattaché${
-                pages.length + notes.length > 1 ? "s" : ""
+                items.length > 1 ? "s" : ""
               } repasseront en « Hors lot » — rien n'est supprimé.`
             : "Aucun élément n'y est rattaché — la suppression est sans effet collatéral."
         }
@@ -668,30 +575,26 @@ function SortableLotSection({
 
 function OrphanSection({
   lots,
-  pages,
-  notes,
+  items,
   profileId,
   projectId,
   dbTemplateLabels,
   sensors,
-  onPagesDragEnd,
-  onNotesDragEnd,
+  onItemsDragEnd,
   onPageLotChange,
   onNoteLotChange,
 }: {
   lots: BoardLot[];
-  pages: BoardPage[];
-  notes: BoardNote[];
+  items: LotItem[];
   profileId: string;
   projectId: string;
   dbTemplateLabels: Record<string, string>;
   sensors: ReturnType<typeof useSensors>;
-  onPagesDragEnd: (event: DragEndEvent) => void;
-  onNotesDragEnd: (event: DragEndEvent) => void;
+  onItemsDragEnd: (event: DragEndEvent) => void;
   onPageLotChange: (pageId: string, lotId: string | null) => void;
   onNoteLotChange: (noteId: string, lotId: string | null) => void;
 }) {
-  if (pages.length === 0 && notes.length === 0) return null;
+  if (items.length === 0) return null;
 
   return (
     <section className="flex flex-col gap-5 border-t border-white/10 pt-8">
@@ -700,57 +603,21 @@ function OrphanSection({
           Hors lot
         </span>
         <span className="text-[11px] uppercase tracking-[0.32em] text-white/25">
-          {pages.length + notes.length} élément
-          {pages.length + notes.length > 1 ? "s" : ""}
+          {items.length} élément{items.length > 1 ? "s" : ""}
         </span>
       </header>
 
-      <div className="flex flex-col gap-6 pl-8">
-        <ItemList
-          kind="pages"
-          items={pages.map((p) => ({
-            id: p.id,
-            lot_id: p.lot_id,
-            render: (sortable) => (
-              <SortablePageRow
-                key={p.id}
-                page={p}
-                lots={lots}
-                profileId={profileId}
-                projectId={projectId}
-                dbTemplateLabel={dbTemplateLabels[p.template_id]}
-                onLotChange={onPageLotChange}
-                sortable={sortable}
-              />
-            ),
-          }))}
+      <div className="flex flex-col gap-2 pl-8">
+        <UnifiedItemList
+          items={items}
+          lots={lots}
+          profileId={profileId}
+          projectId={projectId}
+          dbTemplateLabels={dbTemplateLabels}
           sensors={sensors}
-          onDragEnd={onPagesDragEnd}
-          emptyLabel={null}
-        />
-
-        {notes.length > 0 && pages.length > 0 && (
-          <div className="h-px bg-white/5" />
-        )}
-
-        <ItemList
-          kind="notes"
-          items={notes.map((n) => ({
-            id: n.id,
-            lot_id: n.lot_id,
-            render: (sortable) => (
-              <SortableNoteRow
-                key={n.id}
-                note={n}
-                lots={lots}
-                profileId={profileId}
-                onLotChange={onNoteLotChange}
-                sortable={sortable}
-              />
-            ),
-          }))}
-          sensors={sensors}
-          onDragEnd={onNotesDragEnd}
+          onDragEnd={onItemsDragEnd}
+          onPageLotChange={onPageLotChange}
+          onNoteLotChange={onNoteLotChange}
           emptyLabel={null}
         />
       </div>
@@ -759,7 +626,7 @@ function OrphanSection({
 }
 
 // ---------------------------------------------------------------------------
-// Generic sortable list of items (pages OR notes)
+// Unified sortable list of items (pages + notes mélangées)
 // ---------------------------------------------------------------------------
 
 type SortableRenderArg = {
@@ -770,20 +637,31 @@ type SortableRenderArg = {
   isDragging: boolean;
 };
 
-function ItemList({
+function unifiedDndKey(item: LotItem): string {
+  return `${item.kind}:${item.data.id}`;
+}
+
+function UnifiedItemList({
   items,
+  lots,
+  profileId,
+  projectId,
+  dbTemplateLabels,
   sensors,
   onDragEnd,
+  onPageLotChange,
+  onNoteLotChange,
   emptyLabel,
 }: {
-  kind: "pages" | "notes";
-  items: Array<{
-    id: string;
-    lot_id: string | null;
-    render: (sortable: SortableRenderArg) => React.ReactNode;
-  }>;
+  items: LotItem[];
+  lots: BoardLot[];
+  profileId: string;
+  projectId: string;
+  dbTemplateLabels: Record<string, string>;
   sensors: ReturnType<typeof useSensors>;
   onDragEnd: (event: DragEndEvent) => void;
+  onPageLotChange: (pageId: string, lotId: string | null) => void;
+  onNoteLotChange: (noteId: string, lotId: string | null) => void;
   emptyLabel: string | null;
 }) {
   if (items.length === 0) {
@@ -799,13 +677,33 @@ function ItemList({
       onDragEnd={onDragEnd}
     >
       <SortableContext
-        items={items.map((it) => it.id)}
+        items={items.map((it) => unifiedDndKey(it))}
         strategy={verticalListSortingStrategy}
       >
         <ul className="flex flex-col">
           {items.map((it) => (
-            <SortableShell key={it.id} id={it.id}>
-              {(sortable) => it.render(sortable)}
+            <SortableShell key={unifiedDndKey(it)} id={unifiedDndKey(it)}>
+              {(sortable) =>
+                it.kind === "page" ? (
+                  <SortablePageRow
+                    page={it.data}
+                    lots={lots}
+                    profileId={profileId}
+                    projectId={projectId}
+                    dbTemplateLabel={dbTemplateLabels[it.data.template_id]}
+                    onLotChange={onPageLotChange}
+                    sortable={sortable}
+                  />
+                ) : (
+                  <SortableNoteRow
+                    note={it.data}
+                    lots={lots}
+                    profileId={profileId}
+                    onLotChange={onNoteLotChange}
+                    sortable={sortable}
+                  />
+                )
+              }
             </SortableShell>
           ))}
         </ul>

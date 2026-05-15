@@ -442,6 +442,10 @@ export type ProjectContent = {
 /**
  * Liste minimale d'une page publiée telle qu'elle apparaît dans
  * `client_spaces.projects[i].pages[]`.
+ *
+ * `lot_id` permet le regroupement par lot côté espace public. Il est
+ * maintenu en miroir avec `client_contexts.lot_id` pour les pages snapshot
+ * issues d'une note publiée (cf. `setContextLot` / `setContextPublishing`).
  */
 export type PageInSpace = {
   id: string;
@@ -449,6 +453,18 @@ export type PageInSpace = {
   slug: string;
   position: number;
   created_at: string;
+  lot_id: string | null;
+};
+
+/**
+ * Forme d'un lot tel qu'il apparaît dans `client_spaces.projects[i].lots[]`.
+ * Le numéro affiché ("Lot 01", "Lot 02"…) est dérivé de l'index dans le
+ * tableau (déjà trié par position côté vue).
+ */
+export type LotInSpace = {
+  id: string;
+  name: string | null;
+  position: number;
 };
 
 /**
@@ -465,6 +481,7 @@ export type ProjectInSpace = {
   delivery_date: string | null;
   created_at: string;
   pages: PageInSpace[];
+  lots: LotInSpace[];
 };
 
 /**

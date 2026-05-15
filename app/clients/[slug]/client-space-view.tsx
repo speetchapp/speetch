@@ -3,7 +3,11 @@
 import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
-import type { ProjectInSpace } from "@/types/database";
+import type {
+  LotInSpace,
+  PageInSpace,
+  ProjectInSpace,
+} from "@/types/database";
 import { getProjectTypeLabel } from "@/lib/project-types";
 import { lockClientSpace } from "./actions";
 
@@ -156,6 +160,25 @@ function ProjectBlock({
 }) {
   const projectTypeLabel = getProjectTypeLabel(project.project_type);
   const pages = project.pages ?? [];
+  const lots = project.lots ?? [];
+
+  // Regroupe les pages par lot pour le rendu. Les lots sans page sont
+  // masqués (pas de section vide côté public). L'ordre des lots est
+  // l'ordre du tableau (déjà trié côté vue).
+  const lotsWithPages: Array<{ lot: LotInSpace; pages: PageInSpace[] }> = lots
+    .map((lot) => ({
+      lot,
+      pages: pages.filter((p) => p.lot_id === lot.id),
+    }))
+    .filter((entry) => entry.pages.length > 0);
+
+  const orphanPages = pages.filter(
+    (p) => !p.lot_id || !lots.some((l) => l.id === p.lot_id),
+  );
+
+  // Si aucun lot n'est défini (ou aucun lot n'a de page), on retombe sur la
+  // mise en page historique : une liste plate sans entête de lot.
+  const useLotLayout = lotsWithPages.length > 0;
 
   return (
     <article className={`px-6 md:px-12 ${isLast ? "" : ""}`}>
@@ -186,45 +209,162 @@ function ProjectBlock({
         <p className="text-[11px] uppercase tracking-[0.32em] text-white/45">
           {pages.length === 0
             ? "Aucune page publiée"
-            : `${pages.length} page${pages.length > 1 ? "s" : ""}`}
+            : `${pages.length} page${pages.length > 1 ? "s" : ""}${
+                useLotLayout
+                  ? ` · ${lotsWithPages.length} lot${lotsWithPages.length > 1 ? "s" : ""}`
+                  : ""
+              }`}
         </p>
       </motion.div>
 
-      {/* Liste des pages comme liens */}
-      {pages.length > 0 && (
-        <motion.ul
-          initial={{ opacity: 0, y: 12 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true, margin: "-10%" }}
-          transition={{ duration: 0.9, delay: 0.1, ease: EASE_OUT_EXPO }}
-          className="mt-12 flex flex-col border-t border-white/10"
-        >
-          {pages.map((page, i) => (
-            <li key={page.id} className="border-b border-white/10">
-              <Link
-                href={`/clients/${clientSlug}/${project.slug}/${page.slug}`}
-                className="group flex flex-wrap items-baseline justify-between gap-x-10 gap-y-2 py-7 transition-colors md:py-9"
-              >
-                <div className="flex min-w-0 flex-1 items-baseline gap-x-6 gap-y-1">
-                  <span className="font-mono text-[11px] text-white/30 transition-colors group-hover:text-white/55">
-                    {String(i + 1).padStart(2, "0")}
-                  </span>
-                  <h3
-                    className="font-sans font-extralight leading-[0.95] tracking-[-0.03em] text-white/80 transition-colors group-hover:text-[#F5F5F7]"
-                    style={{ fontSize: "clamp(1.75rem, 4vw, 3rem)" }}
-                  >
-                    {page.name}
-                  </h3>
-                </div>
-                <span className="inline-flex items-center gap-3 text-[11px] uppercase tracking-[0.32em] text-white/40 transition-colors group-hover:text-white">
-                  <span>Ouvrir</span>
-                  <span className="inline-block h-px w-6 bg-current transition-all duration-500 ease-out group-hover:w-16" />
-                </span>
-              </Link>
-            </li>
+      {pages.length > 0 && !useLotLayout && (
+        <FlatPagesList
+          pages={pages}
+          projectSlug={project.slug}
+          clientSlug={clientSlug}
+        />
+      )}
+
+      {pages.length > 0 && useLotLayout && (
+        <div className="mt-12 flex flex-col gap-16">
+          {lotsWithPages.map((entry, lotIndex) => (
+            <LotBlock
+              key={entry.lot.id}
+              lot={entry.lot}
+              index={lotIndex}
+              pages={entry.pages}
+              projectSlug={project.slug}
+              clientSlug={clientSlug}
+            />
           ))}
-        </motion.ul>
+          {orphanPages.length > 0 && (
+            <LotBlock
+              lot={null}
+              index={lotsWithPages.length}
+              pages={orphanPages}
+              projectSlug={project.slug}
+              clientSlug={clientSlug}
+            />
+          )}
+        </div>
       )}
     </article>
+  );
+}
+
+function LotBlock({
+  lot,
+  index,
+  pages,
+  projectSlug,
+  clientSlug,
+}: {
+  lot: LotInSpace | null;
+  index: number;
+  pages: PageInSpace[];
+  projectSlug: string;
+  clientSlug: string;
+}) {
+  const label = lot
+    ? `Lot ${String(index + 1).padStart(2, "0")}${
+        lot.name ? ` · ${lot.name}` : ""
+      }`
+    : "Hors lot";
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 12 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: "-10%" }}
+      transition={{ duration: 0.9, delay: 0.05, ease: EASE_OUT_EXPO }}
+      className="flex flex-col"
+    >
+      <header className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 border-t border-white/10 pb-5 pt-6">
+        <p className="font-mono text-[11px] uppercase tracking-[0.4em] text-white/55">
+          {label}
+        </p>
+        <p className="text-[11px] uppercase tracking-[0.32em] text-white/30">
+          {pages.length} page{pages.length > 1 ? "s" : ""}
+        </p>
+      </header>
+      <ul className="flex flex-col border-t border-white/10">
+        {pages.map((page, i) => (
+          <PageRow
+            key={page.id}
+            page={page}
+            index={i}
+            projectSlug={projectSlug}
+            clientSlug={clientSlug}
+          />
+        ))}
+      </ul>
+    </motion.section>
+  );
+}
+
+function FlatPagesList({
+  pages,
+  projectSlug,
+  clientSlug,
+}: {
+  pages: PageInSpace[];
+  projectSlug: string;
+  clientSlug: string;
+}) {
+  return (
+    <motion.ul
+      initial={{ opacity: 0, y: 12 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: "-10%" }}
+      transition={{ duration: 0.9, delay: 0.1, ease: EASE_OUT_EXPO }}
+      className="mt-12 flex flex-col border-t border-white/10"
+    >
+      {pages.map((page, i) => (
+        <PageRow
+          key={page.id}
+          page={page}
+          index={i}
+          projectSlug={projectSlug}
+          clientSlug={clientSlug}
+        />
+      ))}
+    </motion.ul>
+  );
+}
+
+function PageRow({
+  page,
+  index,
+  projectSlug,
+  clientSlug,
+}: {
+  page: PageInSpace;
+  index: number;
+  projectSlug: string;
+  clientSlug: string;
+}) {
+  return (
+    <li className="border-b border-white/10">
+      <Link
+        href={`/clients/${clientSlug}/${projectSlug}/${page.slug}`}
+        className="group flex flex-wrap items-baseline justify-between gap-x-10 gap-y-2 py-7 transition-colors md:py-9"
+      >
+        <div className="flex min-w-0 flex-1 items-baseline gap-x-6 gap-y-1">
+          <span className="font-mono text-[11px] text-white/30 transition-colors group-hover:text-white/55">
+            {String(index + 1).padStart(2, "0")}
+          </span>
+          <h3
+            className="font-sans font-extralight leading-[0.95] tracking-[-0.03em] text-white/80 transition-colors group-hover:text-[#F5F5F7]"
+            style={{ fontSize: "clamp(1.75rem, 4vw, 3rem)" }}
+          >
+            {page.name}
+          </h3>
+        </div>
+        <span className="inline-flex items-center gap-3 text-[11px] uppercase tracking-[0.32em] text-white/40 transition-colors group-hover:text-white">
+          <span>Ouvrir</span>
+          <span className="inline-block h-px w-6 bg-current transition-all duration-500 ease-out group-hover:w-16" />
+        </span>
+      </Link>
+    </li>
   );
 }

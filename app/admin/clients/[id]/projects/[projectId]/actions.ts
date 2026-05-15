@@ -311,6 +311,181 @@ export async function reorderProjectContexts(input: {
   return { ok: true };
 }
 
+export type ReorderLotItemsResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * Réordonne les éléments (pages + notes mélangés) d'un lot — ou du
+ * pseudo-lot "Hors lot" (lotId = null). Chaque item garde son `position`
+ * dans sa propre table ; on numérote 0..N-1 selon l'ordre fourni, en
+ * partageant le compteur entre pages et notes pour que la vue puisse
+ * trier les deux ensemble.
+ *
+ * Garde-fous :
+ *  - chaque item appartient au projet
+ *  - si lotId est fourni, chaque item a bien ce lot_id (ou null pour
+ *    le pseudo-lot "Hors lot")
+ *  - pas de doublons, max 200 items
+ */
+export async function reorderLotItems(input: {
+  profileId: string;
+  projectId: string;
+  lotId: string | null;
+  items: Array<{ kind: "page" | "note"; id: string }>;
+}): Promise<ReorderLotItemsResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.projectId)) {
+    return { ok: false, error: "Projet invalide." };
+  }
+  if (input.lotId !== null && !UUID_REGEX.test(input.lotId)) {
+    return { ok: false, error: "Lot invalide." };
+  }
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    return { ok: false, error: "Liste d'items vide." };
+  }
+  if (input.items.length > 200) {
+    return { ok: false, error: "Trop d'items (max 200)." };
+  }
+  for (const it of input.items) {
+    if (it.kind !== "page" && it.kind !== "note") {
+      return { ok: false, error: "Type d'item invalide." };
+    }
+    if (!UUID_REGEX.test(it.id)) {
+      return { ok: false, error: "Identifiant d'item invalide." };
+    }
+  }
+  const uniqueKey = (it: { kind: string; id: string }) => `${it.kind}:${it.id}`;
+  if (
+    new Set(input.items.map(uniqueKey)).size !== input.items.length
+  ) {
+    return { ok: false, error: "Doublons dans la liste." };
+  }
+
+  const ownership = await ensureProjectOwnership(
+    auth.admin,
+    input.profileId,
+    input.projectId,
+  );
+  if (!ownership.ok) return { ok: false, error: ownership.error };
+
+  // Si lotId fourni, vérifie qu'il appartient au projet
+  if (input.lotId !== null) {
+    const { data: lot } = await auth.admin
+      .from("project_lots" as never)
+      .select("id, project_id")
+      .eq("id", input.lotId)
+      .maybeSingle<Pick<ProjectLotRow, "id" | "project_id">>();
+    if (!lot || lot.project_id !== input.projectId) {
+      return { ok: false, error: "Lot introuvable dans ce projet." };
+    }
+  }
+
+  const pageIds = input.items
+    .filter((it) => it.kind === "page")
+    .map((it) => it.id);
+  const noteIds = input.items
+    .filter((it) => it.kind === "note")
+    .map((it) => it.id);
+
+  // Toutes les pages doivent appartenir au projet ET avoir ce lot_id
+  if (pageIds.length > 0) {
+    const { data: pageRows } = await auth.admin
+      .from("pages")
+      .select("id, project_id, lot_id")
+      .in("id", pageIds)
+      .returns<
+        Array<{ id: string; project_id: string; lot_id: string | null }>
+      >();
+    if ((pageRows ?? []).length !== pageIds.length) {
+      return { ok: false, error: "Page introuvable dans ce projet." };
+    }
+    for (const p of pageRows ?? []) {
+      if (p.project_id !== input.projectId) {
+        return { ok: false, error: "Page hors projet." };
+      }
+      if ((p.lot_id ?? null) !== input.lotId) {
+        return {
+          ok: false,
+          error: "Une page n'est pas dans ce lot (rechargement requis).",
+        };
+      }
+    }
+  }
+
+  // Toutes les notes doivent appartenir au client, être publiées sur ce
+  // projet et avoir ce lot_id
+  if (noteIds.length > 0) {
+    const { data: noteRows } = await auth.admin
+      .from("client_contexts" as never)
+      .select("id, profile_id, project_id, lot_id")
+      .in("id", noteIds)
+      .returns<
+        Array<{
+          id: string;
+          profile_id: string;
+          project_id: string | null;
+          lot_id: string | null;
+        }>
+      >();
+    if ((noteRows ?? []).length !== noteIds.length) {
+      return { ok: false, error: "Note introuvable dans ce projet." };
+    }
+    for (const n of noteRows ?? []) {
+      if (n.profile_id !== input.profileId) {
+        return { ok: false, error: "Note hors client." };
+      }
+      if (n.project_id !== input.projectId) {
+        return { ok: false, error: "Note non publiée sur ce projet." };
+      }
+      if ((n.lot_id ?? null) !== input.lotId) {
+        return {
+          ok: false,
+          error: "Une note n'est pas dans ce lot (rechargement requis).",
+        };
+      }
+    }
+  }
+
+  // Renumérote : position = index global dans la liste fournie. Les
+  // compteurs sont partagés entre pages et notes, ce qui permet à la vue
+  // de les trier ensemble dans un ordre stable. Les positions peuvent
+  // avoir des "trous" par table — c'est intentionnel et sans impact.
+  for (let i = 0; i < input.items.length; i++) {
+    const it = input.items[i];
+    if (it.kind === "page") {
+      const { error } = await auth.admin
+        .from("pages")
+        .update({ position: i } as never)
+        .eq("id", it.id)
+        .eq("project_id", input.projectId);
+      if (error) {
+        console.error("[reorderLotItems] page update error:", error);
+        return { ok: false, error: error.message };
+      }
+    } else {
+      const { error } = await auth.admin
+        .from("client_contexts" as never)
+        .update({ position: i } as never)
+        .eq("id", it.id);
+      if (error) {
+        console.error("[reorderLotItems] note update error:", error);
+        return { ok: false, error: error.message };
+      }
+    }
+  }
+
+  revalidatePath(
+    `/admin/clients/${input.profileId}/projects/${input.projectId}`,
+  );
+  return { ok: true };
+}
+
 // ============================================================================
 // Lots — groupes ordonnés à l'intérieur d'un projet
 // ============================================================================
@@ -702,12 +877,13 @@ export async function setContextLot(input: {
   // La note doit appartenir au client et être publiée sur ce projet
   const { data: ctx } = await auth.admin
     .from("client_contexts" as never)
-    .select("id, profile_id, project_id")
+    .select("id, profile_id, project_id, published_page_id")
     .eq("id", input.contextId)
     .maybeSingle<{
       id: string;
       profile_id: string;
       project_id: string | null;
+      published_page_id: string | null;
     }>();
   if (!ctx || ctx.profile_id !== input.profileId) {
     return { ok: false, error: "Note introuvable." };
@@ -738,6 +914,22 @@ export async function setContextLot(input: {
   if (error) {
     console.error("[setContextLot] update error:", error);
     return { ok: false, error: error.message };
+  }
+
+  // Propage au snapshot publié pour que la vue publique (client_spaces)
+  // puisse grouper les pages par lot directement via pages.lot_id.
+  if (ctx.published_page_id) {
+    const { error: pageError } = await auth.admin
+      .from("pages")
+      .update({ lot_id: input.lotId } as never)
+      .eq("id", ctx.published_page_id);
+    if (pageError) {
+      console.error(
+        "[setContextLot] snapshot page update error:",
+        pageError,
+      );
+      return { ok: false, error: pageError.message };
+    }
   }
 
   revalidatePath(
