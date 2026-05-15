@@ -345,6 +345,22 @@ export function RawHtmlContextView({
     };
   }, [editMode, textOverrides]);
 
+  // Reçoit les demandes d'ouverture de lien depuis l'iframe (cf.
+  // injectExternalLinksScript) et ouvre l'URL dans un nouvel onglet
+  // depuis le parent — plus fiable que window.open dans le sandbox.
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      const data = e.data as { type?: string; href?: string } | null;
+      if (!data || data.type !== "speetch-open-link" || !data.href) return;
+      const href = String(data.href);
+      const lower = href.toLowerCase();
+      if (lower.startsWith("javascript:")) return;
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
   // Mode "chart" : click sur un tableau (création) ou un graphique
   // existant (édition) pour ouvrir la modal de config.
   useEffect(() => {
@@ -1325,35 +1341,45 @@ function buildSrcDoc(
 }
 
 /**
- * Force `target="_blank"` (+ rel noopener) sur tous les liens dont la
- * destination n'est pas une ancre interne (#…). Sans ça, un clic sur un
- * lien dans la note navigue l'iframe elle-même vers la cible, ce qui
- * laisse la note blanche (l'utilisateur perd son contexte). Les ancres
- * intra-page restent inchangées.
+ * Intercepte les clics sur les liens dans l'iframe et les ouvre dans un
+ * nouvel onglet via le parent (postMessage). Sans cette interception, un
+ * clic sur un <a> navigue l'iframe elle-même vers la cible — qui ne
+ * charge pas (X-Frame-Options, cross-origin…) → note blanche.
+ *
+ * On utilise la capture phase + preventDefault pour neutraliser le
+ * comportement par défaut, puis on demande au parent d'ouvrir l'URL
+ * (plus fiable que window.open depuis un sandbox avec allow-popups).
+ * Les ancres intra-page (#…) et liens javascript: sont ignorés.
  */
 function injectExternalLinksScript(html: string): string {
   const script = `
 <script data-speetch-external-links="true">
 (function() {
   try {
-    function apply() {
-      var links = document.querySelectorAll('a[href]');
-      for (var i = 0; i < links.length; i++) {
-        var a = links[i];
-        var href = a.getAttribute('href') || '';
-        if (href.charAt(0) === '#') continue;
-        if (href.toLowerCase().indexOf('javascript:') === 0) continue;
-        a.setAttribute('target', '_blank');
-        a.setAttribute('rel', 'noopener noreferrer');
+    document.addEventListener('click', function(e) {
+      var node = e.target;
+      var a = null;
+      while (node && node.nodeType === 1) {
+        if (node.tagName === 'A') { a = node; break; }
+        node = node.parentNode;
       }
-    }
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', apply);
-    } else {
-      apply();
-    }
+      if (!a) return;
+      var href = a.getAttribute('href') || '';
+      if (!href) return;
+      if (href.charAt(0) === '#') return;
+      var lower = href.toLowerCase();
+      if (lower.indexOf('javascript:') === 0) return;
+      if (lower.indexOf('mailto:') === 0 || lower.indexOf('tel:') === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        parent.postMessage({ type: 'speetch-open-link', href: href }, '*');
+      } catch (err) {
+        try { window.open(href, '_blank', 'noopener,noreferrer'); } catch (e2) {}
+      }
+    }, true);
   } catch (e) {
-    /* swallow — non bloquant */
+    /* swallow */
   }
 })();
 </script>`;

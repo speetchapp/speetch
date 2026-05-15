@@ -61,6 +61,22 @@ export function RawHtmlPageView({
     return result;
   }, [rawHtml, textOverrides, imageOverrides, applySpeetchDs]);
 
+  // Reçoit les demandes d'ouverture de lien depuis l'iframe (cf.
+  // injectExternalLinksScript) et ouvre dans un nouvel onglet depuis
+  // le parent.
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      const data = e.data as { type?: string; href?: string } | null;
+      if (!data || data.type !== "speetch-open-link" || !data.href) return;
+      const href = String(data.href);
+      const lower = href.toLowerCase();
+      if (lower.startsWith("javascript:")) return;
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
   useEffect(() => {
     const iframe = iframeRef.current;
     if (!iframe) return;
@@ -281,32 +297,37 @@ function injectOverridesScript(
 }
 
 /**
- * Force `target="_blank"` (+ rel noopener) sur tous les liens dont la
- * destination n'est pas une ancre interne (#…). Sans ça, un clic sur un
- * lien dans la page navigue l'iframe elle-même vers la cible, ce qui
- * laisse l'iframe blanche.
+ * Intercepte les clics sur les liens dans l'iframe et délègue
+ * l'ouverture au parent via postMessage. Sans cette interception, un
+ * clic sur un <a> navigue l'iframe elle-même → page blanche.
  */
 function injectExternalLinksScript(html: string): string {
   const script = `
 <script data-speetch-external-links="true">
 (function() {
   try {
-    function apply() {
-      var links = document.querySelectorAll('a[href]');
-      for (var i = 0; i < links.length; i++) {
-        var a = links[i];
-        var href = a.getAttribute('href') || '';
-        if (href.charAt(0) === '#') continue;
-        if (href.toLowerCase().indexOf('javascript:') === 0) continue;
-        a.setAttribute('target', '_blank');
-        a.setAttribute('rel', 'noopener noreferrer');
+    document.addEventListener('click', function(e) {
+      var node = e.target;
+      var a = null;
+      while (node && node.nodeType === 1) {
+        if (node.tagName === 'A') { a = node; break; }
+        node = node.parentNode;
       }
-    }
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', apply);
-    } else {
-      apply();
-    }
+      if (!a) return;
+      var href = a.getAttribute('href') || '';
+      if (!href) return;
+      if (href.charAt(0) === '#') return;
+      var lower = href.toLowerCase();
+      if (lower.indexOf('javascript:') === 0) return;
+      if (lower.indexOf('mailto:') === 0 || lower.indexOf('tel:') === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        parent.postMessage({ type: 'speetch-open-link', href: href }, '*');
+      } catch (err) {
+        try { window.open(href, '_blank', 'noopener,noreferrer'); } catch (e2) {}
+      }
+    }, true);
   } catch (e) {
     /* swallow */
   }
