@@ -15,12 +15,139 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { marked } from "marked";
+import mammoth from "mammoth";
 import type { PageContent } from "@/types/database";
 
 export const MAX_HTML_SIZE = 2 * 1024 * 1024; // 2 MB
 export const MAX_MARKDOWN_SIZE = 2 * 1024 * 1024; // 2 MB
+export const MAX_DOCX_SIZE = 8 * 1024 * 1024; // 8 MB (binaire, plus volumineux)
 export const URL_FETCH_TIMEOUT_MS = 15_000;
 export const URL_MAX_BYTES = MAX_HTML_SIZE;
+
+/**
+ * Extrait le texte du premier <h1> dans un fragment HTML produit par
+ * une conversion (mammoth, marked, etc.). Renvoie null si absent.
+ */
+export function extractFirstH1Text(html: string): string | null {
+  const match = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
+  if (!match) return null;
+  const text = match[1]
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length >= 2 ? text : null;
+}
+
+/**
+ * Convertit un .docx (ArrayBuffer) en HTML autonome stylé Speetch via
+ * Mammoth. Retourne aussi le titre extrait du premier H1 si présent.
+ *
+ * On utilise la conversion par défaut de Mammoth (Word styles standards
+ * mappés sur leurs équivalents HTML : Heading 1 → h1, Heading 2 → h2,
+ * Normal → p, etc.). Les images embarquées sont inlinées en data: par
+ * Mammoth — pas de réécriture nécessaire.
+ */
+export async function convertDocxToHtml(
+  buffer: ArrayBuffer,
+  fallbackTitle: string,
+): Promise<{ html: string; extractedTitle: string | null }> {
+  const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
+  const body = result.value;
+  const extractedTitle = extractFirstH1Text(body);
+  const finalTitle = extractedTitle ?? fallbackTitle;
+
+  const safeTitle = finalTitle
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  const html = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>${safeTitle}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 5rem 1.75rem 6rem;
+    color: #1a1a1a;
+    line-height: 1.7;
+    background: #fafaf7;
+    font-size: 16px;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 200;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+    margin: 2.5rem 0 1rem;
+    color: #111;
+  }
+  h1 {
+    font-size: clamp(2rem, 5vw, 3rem);
+    letter-spacing: -0.02em;
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+  }
+  h2 { font-size: 1.75rem; }
+  h3 { font-size: 1.4rem; }
+  h4 { font-size: 1.15rem; font-weight: 400; }
+  h5, h6 { font-size: 1rem; font-weight: 500; }
+  p { margin: 0 0 1rem; }
+  a { color: #1a1a1a; text-decoration: underline; text-underline-offset: 3px; }
+  a:hover { color: #555; }
+  strong { font-weight: 600; }
+  em { font-style: italic; font-family: ui-serif, Georgia, serif; }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.5rem; }
+  li { margin: 0.25rem 0; }
+  ul ul, ol ol, ul ol, ol ul { margin: 0.25rem 0; }
+  blockquote {
+    margin: 1.5rem 0;
+    padding: 0.5rem 0 0.5rem 1.25rem;
+    border-left: 2px solid #ccc;
+    color: #555;
+    font-style: italic;
+    font-family: ui-serif, Georgia, serif;
+  }
+  hr { border: 0; border-top: 1px solid #ddd; margin: 2.5rem 0; }
+  img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    margin: 1.5rem 0;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1.5rem 0;
+    font-size: 0.95rem;
+  }
+  th, td {
+    border: 1px solid #ddd;
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { font-weight: 500; background: rgba(0,0,0,0.025); }
+</style>
+</head>
+<body>
+${body}
+</body>
+</html>`;
+
+  return { html, extractedTitle };
+}
 
 /**
  * Extrait le premier titre H1 d'un texte markdown (`# Mon titre`).

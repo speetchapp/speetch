@@ -7,8 +7,10 @@ import { CUSTOM_TEMPLATE_ID } from "@/lib/page-templates";
 import { ensureUniqueSlug, slugify } from "@/lib/slug";
 import type { PageContent } from "@/types/database";
 import {
+  MAX_DOCX_SIZE,
   MAX_HTML_SIZE,
   MAX_MARKDOWN_SIZE,
+  convertDocxToHtml,
   convertHtmlToContext,
   convertMarkdownToHtml,
   extractMarkdownTitle,
@@ -222,27 +224,31 @@ export async function createClientContext(
     sourceKindRaw !== "upload" &&
     sourceKindRaw !== "url" &&
     sourceKindRaw !== "empty" &&
-    sourceKindRaw !== "markdown"
+    sourceKindRaw !== "markdown" &&
+    sourceKindRaw !== "docx"
   ) {
     return {
       status: "error",
-      error: "Source invalide (upload, markdown, url ou empty attendu).",
+      error: "Source invalide (upload, markdown, docx, url ou empty attendu).",
     };
   }
   const uiSourceKind = sourceKindRaw as
     | "upload"
     | "url"
     | "empty"
-    | "markdown";
+    | "markdown"
+    | "docx";
 
   const modeRaw = String(formData.get("mode") ?? "analyze").trim();
   if (modeRaw !== "analyze" && modeRaw !== "raw") {
     return { status: "error", error: "Mode invalide (analyze ou raw attendu)." };
   }
-  // Markdown et empty forcent "raw" : rien à analyser via Claude,
-  // le markdown est déjà structuré et converti en HTML stylé localement.
+  // Markdown, docx et empty forcent "raw" : rien à analyser via Claude
+  // (déjà structuré côté source) ou rien à analyser (note vide).
   const mode =
-    uiSourceKind === "empty" || uiSourceKind === "markdown"
+    uiSourceKind === "empty" ||
+    uiSourceKind === "markdown" ||
+    uiSourceKind === "docx"
       ? "raw"
       : (modeRaw as "analyze" | "raw");
 
@@ -307,6 +313,41 @@ export async function createClientContext(
         ? overrideTitle
         : (mdTitle ?? filenameTitle ?? "Note Markdown");
     html = convertMarkdownToHtml(mdText, preResolvedTitle);
+  } else if (uiSourceKind === "docx") {
+    const file = formData.get("file");
+    if (!(file instanceof File) || file.size === 0) {
+      return { status: "error", error: "Aucun fichier Word reçu." };
+    }
+    if (file.size > MAX_DOCX_SIZE) {
+      return {
+        status: "error",
+        error: "Fichier Word trop volumineux (max 8 MB).",
+      };
+    }
+    sourceFilename = file.name || null;
+    const filenameTitle = sourceFilename
+      ? sourceFilename.replace(/\.docx?$/i, "").trim() || null
+      : null;
+    const fallbackTitle =
+      overrideTitle.length >= 2
+        ? overrideTitle
+        : (filenameTitle ?? "Note Word");
+    try {
+      const buffer = await file.arrayBuffer();
+      const result = await convertDocxToHtml(buffer, fallbackTitle);
+      preResolvedTitle =
+        overrideTitle.length >= 2
+          ? overrideTitle
+          : (result.extractedTitle ?? filenameTitle ?? "Note Word");
+      html = result.html;
+    } catch (err) {
+      console.error("[createClientContext] docx conversion error:", err);
+      return {
+        status: "error",
+        error:
+          "Impossible de convertir ce fichier Word. Vérifie qu'il s'agit bien d'un .docx valide.",
+      };
+    }
   } else if (uiSourceKind === "url") {
     const url = String(formData.get("url") ?? "").trim();
     if (!url) {
@@ -399,8 +440,12 @@ export async function createClientContext(
 
   // Le CHECK constraint en base n'accepte que upload/url/empty. Un import
   // .md est aussi un upload (avec un filename qui le distingue).
+  // Le CHECK constraint en base n'accepte que upload/url/empty. Markdown et
+  // docx sont des sous-cas d'upload (le filename .md/.docx les distingue).
   const dbSourceKind: "upload" | "url" | "empty" =
-    uiSourceKind === "markdown" ? "upload" : uiSourceKind;
+    uiSourceKind === "markdown" || uiSourceKind === "docx"
+      ? "upload"
+      : uiSourceKind;
 
   const insertPayload: ClientContextInsert = {
     profile_id: profileId,

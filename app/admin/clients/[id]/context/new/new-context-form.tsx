@@ -10,7 +10,7 @@ import { createClientContext, type CreateContextState } from "../actions";
 const EASE_OUT_EXPO: [number, number, number, number] = [0.22, 1, 0.36, 1];
 const INITIAL_STATE: CreateContextState = { status: "idle" };
 
-type SourceKind = "upload" | "markdown" | "url" | "empty";
+type SourceKind = "upload" | "markdown" | "docx" | "url" | "empty";
 type Mode = "analyze" | "raw";
 
 function SubmitButton({
@@ -26,17 +26,19 @@ function SubmitButton({
       ? "Créer la note vide"
       : sourceKind === "markdown"
         ? "Importer le Markdown"
-        : mode === "raw"
-          ? sourceKind === "url"
-            ? "Récupérer & enregistrer"
-            : "Enregistrer en l'état"
-          : sourceKind === "url"
-            ? "Récupérer & analyser"
-            : "Analyser & enregistrer";
+        : sourceKind === "docx"
+          ? "Importer le document Word"
+          : mode === "raw"
+            ? sourceKind === "url"
+              ? "Récupérer & enregistrer"
+              : "Enregistrer en l'état"
+            : sourceKind === "url"
+              ? "Récupérer & analyser"
+              : "Analyser & enregistrer";
   const busy =
     sourceKind === "empty"
       ? "Création…"
-      : sourceKind === "markdown"
+      : sourceKind === "markdown" || sourceKind === "docx"
         ? "Conversion…"
         : mode === "raw"
           ? "Enregistrement…"
@@ -151,6 +153,13 @@ const SOURCE_OPTIONS: Array<{
     tagline: "Note .md, README, doc technique…",
     description:
       "Upload un fichier .md depuis ton disque. Conversion en HTML stylé Speetch — titres, listes, code, citations préservés.",
+  },
+  {
+    value: "docx",
+    label: "Document Word",
+    tagline: ".docx, brief client, rapport…",
+    description:
+      "Upload un fichier .docx. Conversion en HTML stylé Speetch via Mammoth — titres, listes, gras/italique, tableaux, images préservés.",
   },
   {
     value: "url",
@@ -286,8 +295,8 @@ export function NewContextForm({
             </span>
           </h1>
           <p className="max-w-lg font-serif text-base italic text-white/45 md:text-lg">
-            Upload un fichier HTML ou Markdown, colle une URL — Claude analyse
-            le contenu et le restructure en note de contexte stylée Speetch.
+            Upload un fichier HTML, Markdown ou Word, colle une URL — Claude
+            analyse ou Speetch convertit en note de contexte stylée.
           </p>
         </motion.div>
 
@@ -303,9 +312,11 @@ export function NewContextForm({
 
           <SourceField sourceKind={sourceKind} onChange={setSourceKind} />
 
-          {sourceKind !== "empty" && sourceKind !== "markdown" && (
-            <ModeField mode={mode} onChange={setMode} />
-          )}
+          {sourceKind !== "empty" &&
+            sourceKind !== "markdown" &&
+            sourceKind !== "docx" && (
+              <ModeField mode={mode} onChange={setMode} />
+            )}
 
           {sourceKind === "upload" && (
             <Field label="Fichier HTML" hint="max 2 MB">
@@ -331,6 +342,21 @@ export function NewContextForm({
             </Field>
           )}
 
+          {sourceKind === "docx" && (
+            <Field
+              label="Document Word"
+              hint="max 8 MB · .docx (pas .doc legacy)"
+            >
+              <input
+                type="file"
+                name="file"
+                required
+                accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                className="block w-full text-sm text-white/70 file:mr-4 file:rounded-md file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-[11px] file:uppercase file:tracking-[0.32em] file:text-white/80 hover:file:bg-white/20"
+              />
+            </Field>
+          )}
+
           {sourceKind === "url" && (
             <Field label="URL de la page" hint="https://… uniquement">
               <input
@@ -349,7 +375,7 @@ export function NewContextForm({
             hint={
               sourceKind === "empty"
                 ? "requis"
-                : sourceKind === "markdown"
+                : sourceKind === "markdown" || sourceKind === "docx"
                   ? "optionnel — repris du H1 ou du nom de fichier si vide"
                   : "optionnel — Claude propose si vide"
             }
@@ -388,9 +414,11 @@ export function NewContextForm({
               ? "Une note vierge est créée. Tu pourras remplir le HTML depuis la note."
               : sourceKind === "markdown"
                 ? "Le Markdown est converti en HTML stylé Speetch — aucun appel Claude. Quasi instantané."
-                : mode === "raw"
-                  ? "Le HTML est stocké et rendu tel quel — aucun appel Claude. Quasi instantané."
-                  : "L'analyse Claude prend en général 10-30 secondes. Reste sur la page pendant la conversion."}
+                : sourceKind === "docx"
+                  ? "Le document Word est converti en HTML stylé Speetch via Mammoth — aucun appel Claude. Images embarquées préservées."
+                  : mode === "raw"
+                    ? "Le HTML est stocké et rendu tel quel — aucun appel Claude. Quasi instantané."
+                    : "L'analyse Claude prend en général 10-30 secondes. Reste sur la page pendant la conversion."}
           </p>
 
           <div className="flex items-center justify-between border-t border-white/10 pt-6">
