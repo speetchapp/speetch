@@ -76,10 +76,9 @@ export default async function ProjectDetailPage({
     .order("created_at", { ascending: true })
     .returns<BoardPage[]>();
 
-  const pages: PageRow[] = (pagesData ?? []) as PageRow[];
-  const publishedCount = pages.filter((p) => p.is_published).length;
-
-  // Notes publiées sur ce projet (project_id = projectId)
+  // Notes publiées sur ce projet (project_id = projectId).
+  // On les lit AVANT de filtrer les pages : on a besoin de leurs
+  // published_page_id pour exclure les pages-snapshot de la liste affichée.
   const { data: notesData } = await admin
     .from("client_contexts" as never)
     .select(
@@ -103,6 +102,22 @@ export default async function ProjectDetailPage({
         >
       >
     >();
+
+  // Une note publiée crée une page-snapshot dans `pages` (id =
+  // published_page_id). On masque ces snapshots dans la liste : la note est
+  // la source de vérité (titre, contenu, lot), la page suit silencieusement.
+  // Sinon on aurait un doublon visuel (titre × 2 : une fois dans le lot de
+  // la note, une fois dans "Hors lot" du côté page).
+  const snapshotPageIds = new Set(
+    (notesData ?? [])
+      .map((n) => n.published_page_id)
+      .filter((id): id is string => id !== null),
+  );
+
+  const pages: PageRow[] = ((pagesData ?? []) as PageRow[]).filter(
+    (p) => !snapshotPageIds.has(p.id),
+  );
+  const publishedCount = pages.filter((p) => p.is_published).length;
 
   const notes: BoardNote[] = (notesData ?? []).map((n) => ({
     id: n.id,
