@@ -3,14 +3,12 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { getProjectTypeLabel } from "@/lib/project-types";
+import { isDbTemplateId } from "@/lib/page-templates";
+import { Button, StatusBadge } from "@/lib/ds";
 import {
-  CUSTOM_TEMPLATE_ID,
-  RAW_HTML_VIRTUAL_TEMPLATE_ID,
-  getPageTemplate,
-  isDbTemplateId,
-} from "@/lib/page-templates";
-import { Button, Chip, Hairline, StatusBadge } from "@/lib/ds";
-import { DetachPageButton } from "./_components/detach-page-button";
+  SortablePagesList,
+  type SortablePageRow,
+} from "./_components/sortable-pages-list";
 
 export const metadata: Metadata = {
   title: "Projet · Pages",
@@ -22,15 +20,7 @@ export const dynamic = "force-dynamic";
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-type PageRow = {
-  id: string;
-  name: string;
-  slug: string;
-  template_id: string;
-  position: number;
-  is_published: boolean;
-  created_at: string;
-};
+type PageRow = SortablePageRow;
 
 export default async function ProjectDetailPage({
   params,
@@ -175,89 +165,12 @@ export default async function ProjectDetailPage({
         {pages.length === 0 ? (
           <EmptyState clientId={id} projectId={projectId} />
         ) : (
-          <ul className="flex flex-col border-t border-white/10">
-            {pages.map((page) => {
-              const codeTemplate = getPageTemplate(page.template_id);
-              const dbLabel = dbTemplateLabels.get(page.template_id);
-              const isDetached = page.template_id === CUSTOM_TEMPLATE_ID;
-              const isRawHtmlDirect =
-                page.template_id === RAW_HTML_VIRTUAL_TEMPLATE_ID;
-              const templateLabel = isDetached
-                ? "Détachée"
-                : isRawHtmlDirect
-                  ? "Reproduction fidèle"
-                  : (codeTemplate?.label ?? dbLabel ?? null);
-              const formattedDate = new Date(
-                page.created_at,
-              ).toLocaleDateString("fr-FR", {
-                year: "numeric",
-                month: "short",
-                day: "numeric",
-              });
-              return (
-                <li
-                  key={page.id}
-                  className="flex flex-wrap items-baseline justify-between gap-x-10 gap-y-3 border-b border-white/10 py-7"
-                >
-                  <Link
-                    href={`/admin/clients/${id}/projects/${projectId}/pages/${page.id}`}
-                    className="group flex min-w-0 flex-1 flex-col gap-2"
-                  >
-                    <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
-                      <h2 className="text-2xl font-light text-white/80 transition-colors group-hover:text-[#F5F5F7] md:text-3xl">
-                        {page.name}
-                      </h2>
-                      {page.is_published ? (
-                        <StatusBadge tone="success">Publiée</StatusBadge>
-                      ) : (
-                        <StatusBadge tone="warning">Brouillon</StatusBadge>
-                      )}
-                    </div>
-                    {templateLabel && (
-                      <Chip
-                        tone={
-                          isDetached
-                            ? "muted"
-                            : isRawHtmlDirect
-                              ? "warning"
-                              : "default"
-                        }
-                        className="w-fit"
-                      >
-                        {templateLabel}
-                        {dbLabel && !isDetached && !isRawHtmlDirect && (
-                          <span className="ml-2 text-white/35">· HTML</span>
-                        )}
-                      </Chip>
-                    )}
-                    <p className="font-mono text-[11px] text-white/35">
-                      <span>/{page.slug}</span>
-                      <span className="text-white/20"> · </span>
-                      <span>{formattedDate}</span>
-                    </p>
-                  </Link>
-
-                  <div className="flex shrink-0 items-center gap-6">
-                    {!isDetached && !isRawHtmlDirect && (
-                      <DetachPageButton
-                        profileId={id}
-                        projectId={projectId}
-                        pageId={page.id}
-                        pageName={page.name}
-                      />
-                    )}
-                    <Link
-                      href={`/admin/clients/${id}/projects/${projectId}/pages/${page.id}`}
-                      className="group inline-flex items-center gap-3 text-[11px] uppercase tracking-[0.32em] text-white/55 transition-colors hover:text-white"
-                    >
-                      <span>Éditer</span>
-                      <Hairline width="sm" hover="lg" />
-                    </Link>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          <SortablePagesList
+            profileId={id}
+            projectId={projectId}
+            pages={pages}
+            dbTemplateLabels={Object.fromEntries(dbTemplateLabels)}
+          />
         )}
 
         <div className="flex items-center pt-4">
