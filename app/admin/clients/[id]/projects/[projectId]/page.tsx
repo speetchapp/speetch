@@ -6,9 +6,13 @@ import { getProjectTypeLabel } from "@/lib/project-types";
 import { isDbTemplateId } from "@/lib/page-templates";
 import { Button, StatusBadge } from "@/lib/ds";
 import {
-  SortablePagesList,
-  type SortablePageRow,
-} from "./_components/sortable-pages-list";
+  ProjectBoard,
+  type BoardLot,
+  type BoardNote,
+  type BoardPage,
+} from "./_components/project-board";
+import type { ProjectLotRow } from "./_lib/lot-types";
+import type { ClientContextRow } from "../../context/_lib/types";
 
 export const metadata: Metadata = {
   title: "Projet · Pages",
@@ -20,7 +24,7 @@ export const dynamic = "force-dynamic";
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-type PageRow = SortablePageRow;
+type PageRow = BoardPage;
 
 export default async function ProjectDetailPage({
   params,
@@ -64,13 +68,65 @@ export default async function ProjectDetailPage({
 
   const { data: pagesData } = await admin
     .from("pages")
-    .select("id, name, slug, template_id, position, is_published, created_at")
+    .select(
+      "id, name, slug, template_id, position, is_published, created_at, lot_id" as never,
+    )
     .eq("project_id", projectId)
     .order("position", { ascending: true })
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .returns<BoardPage[]>();
 
   const pages: PageRow[] = (pagesData ?? []) as PageRow[];
   const publishedCount = pages.filter((p) => p.is_published).length;
+
+  // Notes publiées sur ce projet (project_id = projectId)
+  const { data: notesData } = await admin
+    .from("client_contexts" as never)
+    .select(
+      "id, title, slug, position, source_kind, created_at, lot_id, published_page_id",
+    )
+    .eq("project_id", projectId)
+    .order("position", { ascending: true })
+    .order("created_at", { ascending: true })
+    .returns<
+      Array<
+        Pick<
+          ClientContextRow,
+          | "id"
+          | "title"
+          | "slug"
+          | "position"
+          | "source_kind"
+          | "created_at"
+          | "lot_id"
+          | "published_page_id"
+        >
+      >
+    >();
+
+  const notes: BoardNote[] = (notesData ?? []).map((n) => ({
+    id: n.id,
+    title: n.title,
+    slug: n.slug,
+    position: n.position,
+    is_published: n.published_page_id !== null,
+    source_kind: n.source_kind,
+    created_at: n.created_at,
+    lot_id: n.lot_id,
+  }));
+
+  // Lots du projet
+  const { data: lotsData } = await admin
+    .from("project_lots" as never)
+    .select("id, name, position")
+    .eq("project_id", projectId)
+    .order("position", { ascending: true })
+    .returns<Array<Pick<ProjectLotRow, "id" | "name" | "position">>>();
+  const lots: BoardLot[] = (lotsData ?? []).map((l) => ({
+    id: l.id,
+    name: l.name,
+    position: l.position,
+  }));
 
   // Batch-fetch les labels des templates DB référencés
   const dbTemplateIds = Array.from(
@@ -156,19 +212,31 @@ export default async function ProjectDetailPage({
           </div>
 
           <p className="text-[11px] uppercase tracking-[0.32em] text-white/45">
-            {pages.length === 0
-              ? "Aucune page pour le moment"
-              : `${pages.length} page${pages.length > 1 ? "s" : ""} · ${publishedCount} publiée${publishedCount > 1 ? "s" : ""}`}
+            {pages.length === 0 && notes.length === 0
+              ? "Aucune page ni note pour le moment"
+              : [
+                  `${pages.length} page${pages.length > 1 ? "s" : ""} · ${publishedCount} publiée${publishedCount > 1 ? "s" : ""}`,
+                  notes.length > 0
+                    ? `${notes.length} note${notes.length > 1 ? "s" : ""}`
+                    : null,
+                  lots.length > 0
+                    ? `${lots.length} lot${lots.length > 1 ? "s" : ""}`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
           </p>
         </div>
 
-        {pages.length === 0 ? (
+        {pages.length === 0 && notes.length === 0 && lots.length === 0 ? (
           <EmptyState clientId={id} projectId={projectId} />
         ) : (
-          <SortablePagesList
+          <ProjectBoard
             profileId={id}
             projectId={projectId}
-            pages={pages}
+            initialLots={lots}
+            initialPages={pages}
+            initialNotes={notes}
             dbTemplateLabels={Object.fromEntries(dbTemplateLabels)}
           />
         )}

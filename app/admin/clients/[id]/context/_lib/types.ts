@@ -24,6 +24,7 @@ export type ClientContextRow = {
   position: number;
   project_id: string | null;
   published_page_id: string | null;
+  lot_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -41,6 +42,7 @@ export type ClientContextInsert = {
   position?: number;
   project_id?: string | null;
   published_page_id?: string | null;
+  lot_id?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -57,6 +59,7 @@ export type ClientContextSummary = Pick<
   | "position"
   | "project_id"
   | "published_page_id"
+  | "lot_id"
   | "created_at"
   | "updated_at"
 >;

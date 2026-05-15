@@ -3,10 +3,15 @@
 import { revalidatePath } from "next/cache";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
 import type { PageContent } from "@/types/database";
+import type {
+  ProjectLotInsert,
+  ProjectLotRow,
+} from "./_lib/lot-types";
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const BUCKET = "page-media";
+const MAX_LOT_NAME_LEN = 80;
 
 type DeleteProjectInput = {
   profileId: string;
@@ -221,5 +226,522 @@ export async function reorderProjectPages(input: {
   }
 
   revalidatePath(`/admin/clients/${input.profileId}/projects/${input.projectId}`);
+  return { ok: true };
+}
+
+export type ReorderProjectContextsResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * Met à jour la `position` des notes publiées sur un projet pour refléter
+ * l'ordre passé. Toutes les notes fournies doivent appartenir au client et
+ * être déjà rattachées au projet (project_id = projectId).
+ */
+export async function reorderProjectContexts(input: {
+  profileId: string;
+  projectId: string;
+  contextIds: string[];
+}): Promise<ReorderProjectContextsResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.projectId)) {
+    return { ok: false, error: "Projet invalide." };
+  }
+  if (!Array.isArray(input.contextIds) || input.contextIds.length === 0) {
+    return { ok: false, error: "Liste de notes vide." };
+  }
+  if (input.contextIds.length > 200) {
+    return { ok: false, error: "Trop de notes (max 200)." };
+  }
+  if (!input.contextIds.every((id) => UUID_REGEX.test(id))) {
+    return { ok: false, error: "Identifiant de note invalide." };
+  }
+  if (new Set(input.contextIds).size !== input.contextIds.length) {
+    return { ok: false, error: "Doublons dans la liste." };
+  }
+
+  const ownership = await ensureProjectOwnership(
+    auth.admin,
+    input.profileId,
+    input.projectId,
+  );
+  if (!ownership.ok) return { ok: false, error: ownership.error };
+
+  // Les notes fournies doivent appartenir au client ET être rattachées au projet
+  const { data: existing } = await auth.admin
+    .from("client_contexts" as never)
+    .select("id, profile_id, project_id")
+    .eq("project_id", input.projectId)
+    .eq("profile_id", input.profileId)
+    .returns<
+      Array<{ id: string; profile_id: string; project_id: string | null }>
+    >();
+  const existingIds = new Set((existing ?? []).map((c) => c.id));
+  if (existingIds.size !== input.contextIds.length) {
+    return {
+      ok: false,
+      error: "Liste incohérente avec les notes du projet (rechargement requis).",
+    };
+  }
+  for (const id of input.contextIds) {
+    if (!existingIds.has(id)) {
+      return { ok: false, error: "Note introuvable dans ce projet." };
+    }
+  }
+
+  for (let i = 0; i < input.contextIds.length; i++) {
+    const { error } = await auth.admin
+      .from("client_contexts" as never)
+      .update({ position: i } as never)
+      .eq("id", input.contextIds[i]);
+    if (error) {
+      console.error("[reorderProjectContexts] update error:", error);
+      return { ok: false, error: error.message };
+    }
+  }
+
+  revalidatePath(
+    `/admin/clients/${input.profileId}/projects/${input.projectId}`,
+  );
+  return { ok: true };
+}
+
+// ============================================================================
+// Lots — groupes ordonnés à l'intérieur d'un projet
+// ============================================================================
+
+/**
+ * Vérifie qu'un projet appartient bien au client passé. Renvoie le projet
+ * ou une erreur. Helper interne — toutes les actions lot sont projet-scopées.
+ */
+async function ensureProjectOwnership(
+  admin: ReturnType<typeof createAdminClient>,
+  profileId: string,
+  projectId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data: project } = await admin
+    .from("projects")
+    .select("id, profile_id")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (!project || project.profile_id !== profileId) {
+    return { ok: false, error: "Projet introuvable." };
+  }
+  return { ok: true };
+}
+
+function normalizeLotName(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > MAX_LOT_NAME_LEN) {
+    return trimmed.slice(0, MAX_LOT_NAME_LEN);
+  }
+  return trimmed;
+}
+
+export type CreateProjectLotResult =
+  | { ok: true; lotId: string }
+  | { ok: false; error: string };
+
+/**
+ * Crée un nouveau lot à la fin de la liste (position = max + 1). Le nom est
+ * optionnel — l'UI affichera "Lot N" + nom si présent.
+ */
+export async function createProjectLot(input: {
+  profileId: string;
+  projectId: string;
+  name?: string | null;
+}): Promise<CreateProjectLotResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.projectId)) {
+    return { ok: false, error: "Projet invalide." };
+  }
+
+  const ownership = await ensureProjectOwnership(
+    auth.admin,
+    input.profileId,
+    input.projectId,
+  );
+  if (!ownership.ok) return { ok: false, error: ownership.error };
+
+  // Position suivante = max + 1 parmi les lots existants du projet.
+  const { data: maxRow } = await auth.admin
+    .from("project_lots" as never)
+    .select("position")
+    .eq("project_id", input.projectId)
+    .order("position", { ascending: false })
+    .limit(1)
+    .maybeSingle<Pick<ProjectLotRow, "position">>();
+  const nextPosition = (maxRow?.position ?? -1) + 1;
+
+  const payload: ProjectLotInsert = {
+    project_id: input.projectId,
+    name: normalizeLotName(input.name),
+    position: nextPosition,
+  };
+
+  const { data: inserted, error } = await auth.admin
+    .from("project_lots" as never)
+    .insert(payload as never)
+    .select("id")
+    .single<{ id: string }>();
+
+  if (error || !inserted) {
+    console.error("[createProjectLot] insert error:", error);
+    return { ok: false, error: error?.message ?? "Création du lot impossible." };
+  }
+
+  revalidatePath(
+    `/admin/clients/${input.profileId}/projects/${input.projectId}`,
+  );
+  return { ok: true, lotId: inserted.id };
+}
+
+export type RenameProjectLotResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * Renomme un lot (le numéro affiché reste dérivé de `position`, seul le `name`
+ * libre change). Passer une chaîne vide / null efface le nom.
+ */
+export async function renameProjectLot(input: {
+  profileId: string;
+  projectId: string;
+  lotId: string;
+  name: string | null;
+}): Promise<RenameProjectLotResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.projectId)) {
+    return { ok: false, error: "Projet invalide." };
+  }
+  if (!UUID_REGEX.test(input.lotId)) {
+    return { ok: false, error: "Lot invalide." };
+  }
+
+  const ownership = await ensureProjectOwnership(
+    auth.admin,
+    input.profileId,
+    input.projectId,
+  );
+  if (!ownership.ok) return { ok: false, error: ownership.error };
+
+  const normalized = normalizeLotName(input.name);
+
+  const { error } = await auth.admin
+    .from("project_lots" as never)
+    .update({ name: normalized } as never)
+    .eq("id", input.lotId)
+    .eq("project_id", input.projectId);
+
+  if (error) {
+    console.error("[renameProjectLot] update error:", error);
+    return { ok: false, error: error.message };
+  }
+
+  revalidatePath(
+    `/admin/clients/${input.profileId}/projects/${input.projectId}`,
+  );
+  return { ok: true };
+}
+
+export type DeleteProjectLotResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * Supprime un lot. Les pages et notes qui y étaient rattachées repassent
+ * automatiquement en "Hors lot" via le ON DELETE SET NULL de la FK.
+ */
+export async function deleteProjectLot(input: {
+  profileId: string;
+  projectId: string;
+  lotId: string;
+}): Promise<DeleteProjectLotResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.projectId)) {
+    return { ok: false, error: "Projet invalide." };
+  }
+  if (!UUID_REGEX.test(input.lotId)) {
+    return { ok: false, error: "Lot invalide." };
+  }
+
+  const ownership = await ensureProjectOwnership(
+    auth.admin,
+    input.profileId,
+    input.projectId,
+  );
+  if (!ownership.ok) return { ok: false, error: ownership.error };
+
+  const { error } = await auth.admin
+    .from("project_lots" as never)
+    .delete()
+    .eq("id", input.lotId)
+    .eq("project_id", input.projectId);
+
+  if (error) {
+    console.error("[deleteProjectLot] delete error:", error);
+    return { ok: false, error: error.message };
+  }
+
+  revalidatePath(
+    `/admin/clients/${input.profileId}/projects/${input.projectId}`,
+  );
+  return { ok: true };
+}
+
+export type ReorderProjectLotsResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * Met à jour la `position` de chaque lot du projet pour refléter l'ordre
+ * passé. La liste doit contenir exactement tous les lots du projet.
+ */
+export async function reorderProjectLots(input: {
+  profileId: string;
+  projectId: string;
+  lotIds: string[];
+}): Promise<ReorderProjectLotsResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.projectId)) {
+    return { ok: false, error: "Projet invalide." };
+  }
+  if (!Array.isArray(input.lotIds) || input.lotIds.length === 0) {
+    return { ok: false, error: "Liste de lots vide." };
+  }
+  if (input.lotIds.length > 200) {
+    return { ok: false, error: "Trop de lots (max 200)." };
+  }
+  if (!input.lotIds.every((id) => UUID_REGEX.test(id))) {
+    return { ok: false, error: "Identifiant de lot invalide." };
+  }
+  if (new Set(input.lotIds).size !== input.lotIds.length) {
+    return { ok: false, error: "Doublons dans la liste." };
+  }
+
+  const ownership = await ensureProjectOwnership(
+    auth.admin,
+    input.profileId,
+    input.projectId,
+  );
+  if (!ownership.ok) return { ok: false, error: ownership.error };
+
+  const { data: existing } = await auth.admin
+    .from("project_lots" as never)
+    .select("id")
+    .eq("project_id", input.projectId)
+    .returns<Array<Pick<ProjectLotRow, "id">>>();
+  const existingIds = new Set((existing ?? []).map((l) => l.id));
+  if (existingIds.size !== input.lotIds.length) {
+    return {
+      ok: false,
+      error: "Liste incohérente avec les lots du projet (rechargement requis).",
+    };
+  }
+  for (const id of input.lotIds) {
+    if (!existingIds.has(id)) {
+      return { ok: false, error: "Lot introuvable dans ce projet." };
+    }
+  }
+
+  for (let i = 0; i < input.lotIds.length; i++) {
+    const { error } = await auth.admin
+      .from("project_lots" as never)
+      .update({ position: i } as never)
+      .eq("id", input.lotIds[i])
+      .eq("project_id", input.projectId);
+    if (error) {
+      console.error("[reorderProjectLots] update error:", error);
+      return { ok: false, error: error.message };
+    }
+  }
+
+  revalidatePath(
+    `/admin/clients/${input.profileId}/projects/${input.projectId}`,
+  );
+  return { ok: true };
+}
+
+export type SetPageLotResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * Range une page dans un lot du projet, ou la sort de tout lot (lotId=null).
+ * On vérifie que page ET lot appartiennent bien au même projet pour éviter
+ * tout cross-project. La FK ON DELETE SET NULL fait déjà ce travail si le
+ * lot est supprimé après coup.
+ */
+export async function setPageLot(input: {
+  profileId: string;
+  projectId: string;
+  pageId: string;
+  lotId: string | null;
+}): Promise<SetPageLotResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.projectId)) {
+    return { ok: false, error: "Projet invalide." };
+  }
+  if (!UUID_REGEX.test(input.pageId)) {
+    return { ok: false, error: "Page invalide." };
+  }
+  if (input.lotId !== null && !UUID_REGEX.test(input.lotId)) {
+    return { ok: false, error: "Lot invalide." };
+  }
+
+  const ownership = await ensureProjectOwnership(
+    auth.admin,
+    input.profileId,
+    input.projectId,
+  );
+  if (!ownership.ok) return { ok: false, error: ownership.error };
+
+  // La page doit être dans ce projet
+  const { data: page } = await auth.admin
+    .from("pages")
+    .select("id, project_id")
+    .eq("id", input.pageId)
+    .maybeSingle();
+  if (!page || page.project_id !== input.projectId) {
+    return { ok: false, error: "Page introuvable dans ce projet." };
+  }
+
+  // Si lotId est fourni, vérifier qu'il appartient au projet
+  if (input.lotId !== null) {
+    const { data: lot } = await auth.admin
+      .from("project_lots" as never)
+      .select("id, project_id")
+      .eq("id", input.lotId)
+      .maybeSingle<Pick<ProjectLotRow, "id" | "project_id">>();
+    if (!lot || lot.project_id !== input.projectId) {
+      return { ok: false, error: "Lot introuvable dans ce projet." };
+    }
+  }
+
+  const { error } = await auth.admin
+    .from("pages")
+    .update({ lot_id: input.lotId } as never)
+    .eq("id", input.pageId);
+
+  if (error) {
+    console.error("[setPageLot] update error:", error);
+    return { ok: false, error: error.message };
+  }
+
+  revalidatePath(
+    `/admin/clients/${input.profileId}/projects/${input.projectId}`,
+  );
+  return { ok: true };
+}
+
+export type SetContextLotResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * Range une note dans un lot du projet, ou la sort de tout lot (lotId=null).
+ * La note doit déjà être publiée sur ce projet (project_id = projectId) —
+ * sinon on refuse, l'admin doit d'abord publier la note via la page de la
+ * note.
+ */
+export async function setContextLot(input: {
+  profileId: string;
+  projectId: string;
+  contextId: string;
+  lotId: string | null;
+}): Promise<SetContextLotResult> {
+  const auth = await requireOwnerAndAdmin();
+  if (!auth.ok) return { ok: false, error: auth.error };
+  if (!UUID_REGEX.test(input.profileId)) {
+    return { ok: false, error: "Client invalide." };
+  }
+  if (!UUID_REGEX.test(input.projectId)) {
+    return { ok: false, error: "Projet invalide." };
+  }
+  if (!UUID_REGEX.test(input.contextId)) {
+    return { ok: false, error: "Note invalide." };
+  }
+  if (input.lotId !== null && !UUID_REGEX.test(input.lotId)) {
+    return { ok: false, error: "Lot invalide." };
+  }
+
+  const ownership = await ensureProjectOwnership(
+    auth.admin,
+    input.profileId,
+    input.projectId,
+  );
+  if (!ownership.ok) return { ok: false, error: ownership.error };
+
+  // La note doit appartenir au client et être publiée sur ce projet
+  const { data: ctx } = await auth.admin
+    .from("client_contexts" as never)
+    .select("id, profile_id, project_id")
+    .eq("id", input.contextId)
+    .maybeSingle<{
+      id: string;
+      profile_id: string;
+      project_id: string | null;
+    }>();
+  if (!ctx || ctx.profile_id !== input.profileId) {
+    return { ok: false, error: "Note introuvable." };
+  }
+  if (ctx.project_id !== input.projectId) {
+    return {
+      ok: false,
+      error: "La note doit d'abord être publiée sur ce projet.",
+    };
+  }
+
+  if (input.lotId !== null) {
+    const { data: lot } = await auth.admin
+      .from("project_lots" as never)
+      .select("id, project_id")
+      .eq("id", input.lotId)
+      .maybeSingle<Pick<ProjectLotRow, "id" | "project_id">>();
+    if (!lot || lot.project_id !== input.projectId) {
+      return { ok: false, error: "Lot introuvable dans ce projet." };
+    }
+  }
+
+  const { error } = await auth.admin
+    .from("client_contexts" as never)
+    .update({ lot_id: input.lotId } as never)
+    .eq("id", input.contextId);
+
+  if (error) {
+    console.error("[setContextLot] update error:", error);
+    return { ok: false, error: error.message };
+  }
+
+  revalidatePath(
+    `/admin/clients/${input.profileId}/projects/${input.projectId}`,
+  );
   return { ok: true };
 }
