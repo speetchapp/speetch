@@ -493,6 +493,9 @@ export function RawHtmlContextView({
     doc.querySelectorAll("script[data-speetch-overrides]").forEach((el) =>
       el.remove(),
     );
+    doc.querySelectorAll("script[data-speetch-external-links]").forEach((el) =>
+      el.remove(),
+    );
 
     let domTarget: Element | null = null;
     try {
@@ -606,6 +609,9 @@ export function RawHtmlContextView({
       );
       doc.querySelectorAll("script[data-speetch-overrides]").forEach((el) =>
         el.remove(),
+      );
+      doc.querySelectorAll("script[data-speetch-external-links]").forEach(
+        (el) => el.remove(),
       );
 
       let totalRemoved = 0;
@@ -923,7 +929,7 @@ export function RawHtmlContextView({
           ref={iframeRef}
           title={title}
           srcDoc={srcDoc}
-          sandbox="allow-scripts allow-same-origin"
+          sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
           referrerPolicy="no-referrer"
           loading="lazy"
           style={{
@@ -1314,7 +1320,48 @@ function buildSrcDoc(
     result = injectSpeetchOverlay(result);
   }
   result = injectOverridesScript(result, textOverrides);
+  result = injectExternalLinksScript(result);
   return result;
+}
+
+/**
+ * Force `target="_blank"` (+ rel noopener) sur tous les liens dont la
+ * destination n'est pas une ancre interne (#…). Sans ça, un clic sur un
+ * lien dans la note navigue l'iframe elle-même vers la cible, ce qui
+ * laisse la note blanche (l'utilisateur perd son contexte). Les ancres
+ * intra-page restent inchangées.
+ */
+function injectExternalLinksScript(html: string): string {
+  const script = `
+<script data-speetch-external-links="true">
+(function() {
+  try {
+    function apply() {
+      var links = document.querySelectorAll('a[href]');
+      for (var i = 0; i < links.length; i++) {
+        var a = links[i];
+        var href = a.getAttribute('href') || '';
+        if (href.charAt(0) === '#') continue;
+        if (href.toLowerCase().indexOf('javascript:') === 0) continue;
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+      }
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', apply);
+    } else {
+      apply();
+    }
+  } catch (e) {
+    /* swallow — non bloquant */
+  }
+})();
+</script>`;
+  const bodyCloseIdx = html.toLowerCase().lastIndexOf("</body>");
+  if (bodyCloseIdx >= 0) {
+    return html.slice(0, bodyCloseIdx) + script + html.slice(bodyCloseIdx);
+  }
+  return html + script;
 }
 
 /**

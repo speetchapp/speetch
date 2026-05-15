@@ -57,6 +57,7 @@ export function RawHtmlPageView({
     if (applySpeetchDs) {
       result = injectSpeetchOverlay(result);
     }
+    result = injectExternalLinksScript(result);
     return result;
   }, [rawHtml, textOverrides, imageOverrides, applySpeetchDs]);
 
@@ -161,7 +162,7 @@ export function RawHtmlPageView({
           ref={iframeRef}
           title={pageName}
           srcDoc={srcDoc}
-          sandbox="allow-scripts allow-same-origin"
+          sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
           referrerPolicy="no-referrer"
           loading="lazy"
           style={{
@@ -272,6 +273,45 @@ function injectOverridesScript(
 </script>`;
 
   // Injecte avant </body> (ou en fin si pas trouvé)
+  const idx = html.toLowerCase().lastIndexOf("</body>");
+  if (idx >= 0) {
+    return html.slice(0, idx) + script + html.slice(idx);
+  }
+  return html + script;
+}
+
+/**
+ * Force `target="_blank"` (+ rel noopener) sur tous les liens dont la
+ * destination n'est pas une ancre interne (#…). Sans ça, un clic sur un
+ * lien dans la page navigue l'iframe elle-même vers la cible, ce qui
+ * laisse l'iframe blanche.
+ */
+function injectExternalLinksScript(html: string): string {
+  const script = `
+<script data-speetch-external-links="true">
+(function() {
+  try {
+    function apply() {
+      var links = document.querySelectorAll('a[href]');
+      for (var i = 0; i < links.length; i++) {
+        var a = links[i];
+        var href = a.getAttribute('href') || '';
+        if (href.charAt(0) === '#') continue;
+        if (href.toLowerCase().indexOf('javascript:') === 0) continue;
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+      }
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', apply);
+    } else {
+      apply();
+    }
+  } catch (e) {
+    /* swallow */
+  }
+})();
+</script>`;
   const idx = html.toLowerCase().lastIndexOf("</body>");
   if (idx >= 0) {
     return html.slice(0, idx) + script + html.slice(idx);
