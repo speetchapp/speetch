@@ -62,6 +62,7 @@ export default async function PublicPageRoute({ params }: Props) {
     !page ||
     !page.profile_id ||
     !page.project_id ||
+    !page.page_id ||
     !page.client_slug ||
     !page.project_slug ||
     !page.page_slug
@@ -117,6 +118,28 @@ export default async function PublicPageRoute({ params }: Props) {
     const applySpeetchDs =
       (content.meta as { apply_speetch_ds?: unknown } | undefined)
         ?.apply_speetch_ds === true;
+
+    // Fetch des annotations existantes pour cette page (lecture publique via RLS)
+    const { data: annotationsData } = await supabase
+      .from("client_annotations" as never)
+      .select(
+        "id, color, anchor_exact, anchor_prefix, anchor_suffix, created_at",
+      )
+      .eq("profile_id", page.profile_id)
+      .eq("target_kind", "page")
+      .eq("target_id", page.page_id)
+      .order("created_at", { ascending: true })
+      .returns<
+        Array<{
+          id: string;
+          color: "yellow" | "green" | "pink" | "blue";
+          anchor_exact: string;
+          anchor_prefix: string;
+          anchor_suffix: string;
+          created_at: string;
+        }>
+      >();
+
     return (
       <RawHtmlPageView
         clientSlug={page.client_slug}
@@ -125,11 +148,19 @@ export default async function PublicPageRoute({ params }: Props) {
         projectName={page.project_name ?? "Projet"}
         pageName={page.page_name ?? "Page"}
         pageSlug={page.page_slug}
+        pageId={page.page_id}
         rawHtml={content.meta.raw_html}
         textOverrides={content.meta.text_overrides}
         imageOverrides={content.meta.image_overrides}
         applySpeetchDs={applySpeetchDs}
         pages={navPages}
+        initialAnnotations={(annotationsData ?? []).map((a) => ({
+          id: a.id,
+          color: a.color,
+          anchor_exact: a.anchor_exact,
+          anchor_prefix: a.anchor_prefix,
+          anchor_suffix: a.anchor_suffix,
+        }))}
       />
     );
   }

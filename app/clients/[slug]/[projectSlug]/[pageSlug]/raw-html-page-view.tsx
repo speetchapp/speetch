@@ -5,6 +5,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Hairline } from "@/lib/ds";
 import { SPEETCH_OVERLAY_CSS } from "@/lib/speetch-overlay-css";
 import { PagesDropdown, type PageNavItem } from "./pages-dropdown";
+import {
+  AnnotationsOverlay,
+  type AnnotationData,
+} from "./_annotations/annotations-overlay";
+import { injectAnnotationsBundle } from "./_annotations/iframe-script";
 
 /**
  * Rendu "raw HTML" — utilisé pour les pages dont content.meta.style = "raw_html".
@@ -31,11 +36,13 @@ export function RawHtmlPageView({
   projectName,
   pageName,
   pageSlug,
+  pageId,
   rawHtml,
   textOverrides,
   imageOverrides,
   applySpeetchDs,
   pages,
+  initialAnnotations,
 }: {
   clientSlug: string;
   clientName: string;
@@ -43,11 +50,13 @@ export function RawHtmlPageView({
   projectName: string;
   pageName: string;
   pageSlug: string;
+  pageId: string;
   rawHtml: string;
   textOverrides?: Record<string, string>;
   imageOverrides?: Record<string, string>;
   applySpeetchDs?: boolean;
   pages: PageNavItem[];
+  initialAnnotations: AnnotationData[];
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [height, setHeight] = useState<number>(0);
@@ -58,6 +67,7 @@ export function RawHtmlPageView({
       result = injectSpeetchOverlay(result);
     }
     result = injectExternalLinksScript(result);
+    result = injectAnnotationsBundle(result);
     return result;
   }, [rawHtml, textOverrides, imageOverrides, applySpeetchDs]);
 
@@ -188,6 +198,13 @@ export function RawHtmlPageView({
             background: "white",
             display: "block",
           }}
+        />
+        <AnnotationsOverlay
+          clientSlug={clientSlug}
+          targetKind="page"
+          targetId={pageId}
+          iframeRef={iframeRef}
+          initialAnnotations={initialAnnotations}
         />
       </div>
 
