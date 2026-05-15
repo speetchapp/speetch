@@ -272,14 +272,21 @@ export async function reorderProjectContexts(input: {
   );
   if (!ownership.ok) return { ok: false, error: ownership.error };
 
-  // Les notes fournies doivent appartenir au client ET être rattachées au projet
+  // Les notes fournies doivent appartenir au client ET être rattachées au
+  // projet. On lit aussi published_page_id pour propager la position au
+  // snapshot dans pages (que lit la vue publique client_spaces).
   const { data: existing } = await auth.admin
     .from("client_contexts" as never)
-    .select("id, profile_id, project_id")
+    .select("id, profile_id, project_id, published_page_id")
     .eq("project_id", input.projectId)
     .eq("profile_id", input.profileId)
     .returns<
-      Array<{ id: string; profile_id: string; project_id: string | null }>
+      Array<{
+        id: string;
+        profile_id: string;
+        project_id: string | null;
+        published_page_id: string | null;
+      }>
     >();
   const existingIds = new Set((existing ?? []).map((c) => c.id));
   if (existingIds.size !== input.contextIds.length) {
@@ -293,6 +300,9 @@ export async function reorderProjectContexts(input: {
       return { ok: false, error: "Note introuvable dans ce projet." };
     }
   }
+  const notePageMap = new Map<string, string | null>(
+    (existing ?? []).map((c) => [c.id, c.published_page_id]),
+  );
 
   for (let i = 0; i < input.contextIds.length; i++) {
     const { error } = await auth.admin
@@ -302,6 +312,21 @@ export async function reorderProjectContexts(input: {
     if (error) {
       console.error("[reorderProjectContexts] update error:", error);
       return { ok: false, error: error.message };
+    }
+    const snapshotPageId = notePageMap.get(input.contextIds[i]) ?? null;
+    if (snapshotPageId) {
+      const { error: snapErr } = await auth.admin
+        .from("pages")
+        .update({ position: i } as never)
+        .eq("id", snapshotPageId)
+        .eq("project_id", input.projectId);
+      if (snapErr) {
+        console.error(
+          "[reorderProjectContexts] snapshot page update error:",
+          snapErr,
+        );
+        return { ok: false, error: snapErr.message };
+      }
     }
   }
 
@@ -419,11 +444,14 @@ export async function reorderLotItems(input: {
   }
 
   // Toutes les notes doivent appartenir au client, être publiées sur ce
-  // projet et avoir ce lot_id
+  // projet et avoir ce lot_id. On récupère aussi published_page_id pour
+  // pouvoir mettre à jour le snapshot dans pages — c'est lui que lit la
+  // vue publique client_spaces.
+  const notePageMap = new Map<string, string | null>();
   if (noteIds.length > 0) {
     const { data: noteRows } = await auth.admin
       .from("client_contexts" as never)
-      .select("id, profile_id, project_id, lot_id")
+      .select("id, profile_id, project_id, lot_id, published_page_id")
       .in("id", noteIds)
       .returns<
         Array<{
@@ -431,6 +459,7 @@ export async function reorderLotItems(input: {
           profile_id: string;
           project_id: string | null;
           lot_id: string | null;
+          published_page_id: string | null;
         }>
       >();
     if ((noteRows ?? []).length !== noteIds.length) {
@@ -449,6 +478,7 @@ export async function reorderLotItems(input: {
           error: "Une note n'est pas dans ce lot (rechargement requis).",
         };
       }
+      notePageMap.set(n.id, n.published_page_id);
     }
   }
 
@@ -456,6 +486,8 @@ export async function reorderLotItems(input: {
   // compteurs sont partagés entre pages et notes, ce qui permet à la vue
   // de les trier ensemble dans un ordre stable. Les positions peuvent
   // avoir des "trous" par table — c'est intentionnel et sans impact.
+  // Pour une note, on update client_contexts.position ET pages.position
+  // sur le snapshot — la vue publique ne lit que pages.position.
   for (let i = 0; i < input.items.length; i++) {
     const it = input.items[i];
     if (it.kind === "page") {
@@ -476,6 +508,21 @@ export async function reorderLotItems(input: {
       if (error) {
         console.error("[reorderLotItems] note update error:", error);
         return { ok: false, error: error.message };
+      }
+      const snapshotPageId = notePageMap.get(it.id) ?? null;
+      if (snapshotPageId) {
+        const { error: snapErr } = await auth.admin
+          .from("pages")
+          .update({ position: i } as never)
+          .eq("id", snapshotPageId)
+          .eq("project_id", input.projectId);
+        if (snapErr) {
+          console.error(
+            "[reorderLotItems] snapshot page update error:",
+            snapErr,
+          );
+          return { ok: false, error: snapErr.message };
+        }
       }
     }
   }
