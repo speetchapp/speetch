@@ -1,69 +1,49 @@
 "use server";
 
-import { headers } from "next/headers";
+import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 
 export type SignInState = {
-  status: "idle" | "success" | "error";
+  status: "idle" | "error";
   message?: string;
 };
 
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 /**
- * Server Action — envoie un magic link Supabase au propriétaire.
+ * Server Action — connexion email + mot de passe.
  *
- * Gate : si SPEETCH_OWNER_EMAIL est défini, seul cet email peut recevoir un
- * lien. Toute autre adresse reçoit une fausse confirmation pour ne pas
- * révéler l'existence du compte.
+ * Gate : si SPEETCH_OWNER_EMAIL est défini, seul cet email peut s'authentifier.
+ * Pour ne pas révéler quel compte existe, on renvoie un message générique.
  */
-export async function signInWithMagicLink(
+export async function signInWithPassword(
   _prev: SignInState,
   formData: FormData,
 ): Promise<SignInState> {
   const email = String(formData.get("email") ?? "")
     .trim()
     .toLowerCase();
-  const redirect = String(formData.get("redirect") ?? "/admin");
+  const password = String(formData.get("password") ?? "");
+  const redirectTo = String(formData.get("redirect") ?? "/admin");
 
-  if (!email || !EMAIL_REGEX.test(email)) {
-    return { status: "error", message: "Adresse e-mail invalide." };
+  if (!email || !EMAIL_REGEX.test(email) || !password) {
+    return { status: "error", message: "Identifiants invalides." };
   }
 
   const ownerEmail = process.env.SPEETCH_OWNER_EMAIL?.toLowerCase();
-
   if (ownerEmail && email !== ownerEmail) {
-    // Pas de leak — fausse confirmation.
-    return {
-      status: "success",
-      message:
-        "Si cette adresse est autorisée, un lien vient d'être envoyé.",
-    };
+    return { status: "error", message: "Identifiants invalides." };
   }
 
-  const h = await headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
-  const proto = h.get("x-forwarded-proto") ?? "http";
-  const origin = process.env.NEXT_PUBLIC_SITE_URL ?? `${proto}://${host}`;
-
   const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithOtp({
+  const { error } = await supabase.auth.signInWithPassword({
     email,
-    options: {
-      shouldCreateUser: true,
-      emailRedirectTo: `${origin}/auth/callback?next=${encodeURIComponent(redirect)}`,
-    },
+    password,
   });
 
   if (error) {
-    return {
-      status: "error",
-      message: error.message || "Authentification impossible.",
-    };
+    return { status: "error", message: "Identifiants invalides." };
   }
 
-  return {
-    status: "success",
-    message: "Lien magique envoyé. Vérifie ta boîte de réception.",
-  };
+  redirect(redirectTo);
 }
